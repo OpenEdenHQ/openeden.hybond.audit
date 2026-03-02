@@ -1,0 +1,36 @@
+{
+  "Common": {
+    "admin": "0x0000000000000000000000000000000000000000"
+  },
+  "HYBOND": {
+    "name": "Tokenized BNY High-yield Bond Fund",
+    "symbol": "HYBOND",
+    "issueCap": "10000000"
+  },
+  "AssetRegistry": {
+    "usdcAsset": "0x0000000000000000000000000000000000000000",
+    "usdcPriceFeed": "0x0000000000000000000000000000000000000000",
+    "usdcSupported": true,
+    "usdcMaxStalePeriod": 0
+  },
+  "PriceOracle": {
+    "decimals": 8,
+    "relativeMaxDeviation": 500,
+    "absoluteMaxDeviation": 1000,
+    "initPrice": "1",
+    "referencePrice": "1",
+    "operator": "0x0000000000000000000000000000000000000000"
+  },
+  "Express": {
+    "usdcAddress": "0x0000000000000000000000000000000000000000",
+    "hybondTokenAddress": "0x0000000000000000000000000000000000000000",
+    "assetRegistryAddress": "0x0000000000000000000000000000000000000000",
+    "treasury": "0x0000000000000000000000000000000000000000",
+    "txFeeTo": "0x0000000000000000000000000000000000000000",
+    "mgtFeeTo": "0x0000000000000000000000000000000000000000",
+    "depositMinimum": "10",
+    "redeemMinimum": "5",
+    "firstDepositAmount": "20",
+    "priceOracle": "0x0000000000000000000000000000000000000000"
+  }
+}
