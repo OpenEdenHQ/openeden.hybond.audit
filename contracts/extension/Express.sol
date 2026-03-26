@@ -140,6 +140,9 @@ contract Express is
     // Monotonically increasing nonce for unique queue entry IDs
     uint256 private _nonce;
 
+    // Escrowed token balances for banned users whose cancel refunds could not be transferred directly
+    mapping(address => uint256) public escrowBalance;
+
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
     //////////////////////////////////////////////////////////////*/
@@ -242,6 +245,10 @@ contract Express is
     event KycGranted(address[] addresses);
     // Event for revoking KYC status from multiple addresses
     event KycRevoked(address[] addresses);
+    // Event for escrowing tokens when a banned user's cancel refund cannot be transferred
+    event EscrowDeposit(address indexed account, uint256 amount);
+    // Event for claiming escrowed tokens
+    event EscrowClaimed(address indexed account, uint256 amount);
 
     /*//////////////////////////////////////////////////////////////
                                  ERRORS
@@ -945,8 +952,7 @@ contract Express is
                 --_len;
             }
 
-            // Refund full token amount to sender
-            IERC20(address(token)).safeTransfer(sender, shareAmount);
+            _refundOrEscrow(sender, shareAmount);
 
             emit CancelPendingRedeem(sender, receiver, shareAmount, id);
         }
@@ -1038,8 +1044,7 @@ contract Express is
                 --_len;
             }
 
-            // Refund full token amount to sender
-            IERC20(address(token)).safeTransfer(sender, shareAmount);
+            _refundOrEscrow(sender, shareAmount);
 
             emit CancelProcessRedeem(
                 sender,
@@ -1049,6 +1054,19 @@ contract Express is
                 id
             );
         }
+    }
+
+    /**
+     * @notice Claim escrowed tokens from cancelled redemptions that could not be refunded directly
+     * @dev Tokens are escrowed when cancel() cannot transfer back to the sender (e.g. sender was banned)
+     */
+    function claimEscrow() external {
+        uint256 amount = escrowBalance[msg.sender];
+        if (amount == 0) revert InvalidAmount();
+
+        escrowBalance[msg.sender] = 0;
+        IERC20(address(token)).safeTransfer(msg.sender, amount);
+        emit EscrowClaimed(msg.sender, amount);
     }
 
     /**
@@ -1461,6 +1479,20 @@ contract Express is
     //////////////////////////////////////////////////////////////*/
 
     /**
+     * @notice Refund tokens to sender, or escrow if sender is banned
+     * @param _sender Address to refund
+     * @param _amount Amount of tokens to refund
+     */
+    function _refundOrEscrow(address _sender, uint256 _amount) internal {
+        if (token.isBanned(_sender)) {
+            escrowBalance[_sender] += _amount;
+            emit EscrowDeposit(_sender, _amount);
+        } else {
+            IERC20(address(token)).safeTransfer(_sender, _amount);
+        }
+    }
+
+    /**
      * @notice Validate KYC for sender and receiver
      * @param _sender Sender address
      * @param _receiver Receiver address
@@ -1614,5 +1646,5 @@ contract Express is
      * @dev Storage gap for future upgrades
      * See https://docs.openzeppelin.com/contracts/4.x/upgradeable#storage_gaps
      */
-    uint256[40] private __gap;
+    uint256[39] private __gap;
 }

@@ -11,4 +11,6 @@ interface IToken {
     function pause() external;
 
     function unpause() external;
+
+    function isBanned(address account) external view returns (bool);
 }

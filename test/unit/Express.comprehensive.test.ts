@@ -329,7 +329,8 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(maintainer).updateRedeemFeeRate(100);
 
         const withdrawAmount = ethers.parseUnits('1000', 18);
-        const [feeAmt, redeemAssetAmt, netRedeemAssetAmt] = await express.previewRedeem(withdrawAmount);
+        const [feeAmt, redeemAssetAmt, netRedeemAssetAmt] =
+          await express.previewRedeem(withdrawAmount);
 
         expect(redeemAssetAmt).to.equal(withdrawAmount);
         expect(feeAmt).to.equal((redeemAssetAmt * 100n) / 10000n);
@@ -712,6 +713,133 @@ describe('Express - Comprehensive Tests', function () {
 
         // Queue should be empty
         expect(await express.getPendingRedeemQueueLength()).to.equal(0);
+      });
+
+      it('should escrow tokens when cancelling pending redeem for banned user', async function () {
+        const fixture = await loadFixture(deployFixture);
+        const { express, user1, oem, maintainer, admin, redeemAmount } =
+          await setupPendingRedemption(fixture);
+
+        // Ban user1 on the token contract
+        const BANLIST_ROLE = await oem.BANLIST_ROLE();
+        await oem.connect(admin).grantRole(BANLIST_ROLE, admin.address);
+        await oem.connect(admin).banAddresses([user1.address]);
+
+        const userBalanceBefore = await oem.balanceOf(user1.address);
+
+        await expect(express.connect(maintainer).cancelPendingRedeem(1))
+          .to.emit(express, 'EscrowDeposit')
+          .withArgs(user1.address, redeemAmount);
+
+        // User balance unchanged (tokens escrowed, not transferred)
+        expect(await oem.balanceOf(user1.address)).to.equal(userBalanceBefore);
+
+        // Escrow balance recorded
+        expect(await express.escrowBalance(user1.address)).to.equal(redeemAmount);
+
+        // Queue should be empty
+        expect(await express.getPendingRedeemQueueLength()).to.equal(0);
+      });
+
+      it('should escrow tokens when cancelling redeem for banned user', async function () {
+        const fixture = await loadFixture(deployFixture);
+        const { express, user1, oem, maintainer, operator, admin, redeemAmount } =
+          await setupPendingRedemption(fixture);
+
+        // Move to final redeem queue
+        const redeemDelay = await express.convertRedeemRequestsDelay();
+        await time.increase(redeemDelay);
+        await express.connect(operator).processPendingRedeems(1);
+
+        // Ban user1
+        const BANLIST_ROLE = await oem.BANLIST_ROLE();
+        await oem.connect(admin).grantRole(BANLIST_ROLE, admin.address);
+        await oem.connect(admin).banAddresses([user1.address]);
+
+        const userBalanceBefore = await oem.balanceOf(user1.address);
+
+        await expect(express.connect(maintainer).cancelRedeem(1))
+          .to.emit(express, 'EscrowDeposit')
+          .withArgs(user1.address, redeemAmount);
+
+        // User balance unchanged
+        expect(await oem.balanceOf(user1.address)).to.equal(userBalanceBefore);
+
+        // Escrow balance recorded
+        expect(await express.escrowBalance(user1.address)).to.equal(redeemAmount);
+      });
+    });
+
+    describe('Claim Escrow', function () {
+      async function setupEscrowedUser(fixture: any) {
+        const { express, user1, oem, maintainer, admin } = await setupUserWithTokens(fixture);
+
+        const redeemAmount = ethers.parseUnits('1000', 18);
+        await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
+        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+
+        // Ban user1 and cancel pending redeem to escrow tokens
+        const BANLIST_ROLE = await oem.BANLIST_ROLE();
+        await oem.connect(admin).grantRole(BANLIST_ROLE, admin.address);
+        await oem.connect(admin).banAddresses([user1.address]);
+        await express.connect(maintainer).cancelPendingRedeem(1);
+
+        return { ...fixture, redeemAmount };
+      }
+
+      it('should allow banned user to claim escrowed tokens after unban', async function () {
+        const fixture = await loadFixture(deployFixture);
+        const { express, user1, oem, admin, redeemAmount } = await setupEscrowedUser(fixture);
+
+        // Unban user1 so they can receive tokens
+        await oem.connect(admin).unbanAddresses([user1.address]);
+
+        const userBalanceBefore = await oem.balanceOf(user1.address);
+
+        await expect(express.connect(user1).claimEscrow())
+          .to.emit(express, 'EscrowClaimed')
+          .withArgs(user1.address, redeemAmount);
+
+        expect(await oem.balanceOf(user1.address)).to.equal(userBalanceBefore + redeemAmount);
+        expect(await express.escrowBalance(user1.address)).to.equal(0);
+      });
+
+      it('should revert claimEscrow when no escrowed balance', async function () {
+        const { express, user1 } = await loadFixture(deployFixture);
+
+        await expect(express.connect(user1).claimEscrow()).to.be.revertedWithCustomError(
+          express,
+          'InvalidAmount'
+        );
+      });
+
+      it('should accumulate escrow across multiple cancelled redeems', async function () {
+        const fixture = await loadFixture(deployFixture);
+        const { express, user1, oem, maintainer, admin } = await setupUserWithTokens(fixture);
+
+        const redeemAmount1 = ethers.parseUnits('500', 18);
+        const redeemAmount2 = ethers.parseUnits('700', 18);
+
+        await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
+        await express.connect(user1).requestRedeem(user1.address, redeemAmount1);
+        await express.connect(user1).requestRedeem(user1.address, redeemAmount2);
+
+        // Ban user1 and cancel both
+        const BANLIST_ROLE = await oem.BANLIST_ROLE();
+        await oem.connect(admin).grantRole(BANLIST_ROLE, admin.address);
+        await oem.connect(admin).banAddresses([user1.address]);
+        await express.connect(maintainer).cancelPendingRedeem(2);
+
+        expect(await express.escrowBalance(user1.address)).to.equal(redeemAmount1 + redeemAmount2);
+
+        // Unban and claim all at once
+        await oem.connect(admin).unbanAddresses([user1.address]);
+
+        const balanceBefore = await oem.balanceOf(user1.address);
+        await express.connect(user1).claimEscrow();
+        expect(await oem.balanceOf(user1.address)).to.equal(
+          balanceBefore + redeemAmount1 + redeemAmount2
+        );
       });
     });
   });
