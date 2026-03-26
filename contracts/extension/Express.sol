@@ -820,6 +820,8 @@ contract Express is
             return false;
         }
 
+        _validateKyc(sender, receiver);
+
         // Remove from pending queue
         pendingRedeemQueue.popFront();
         pendingRedeemInfo[receiver] -= shareAmount;
