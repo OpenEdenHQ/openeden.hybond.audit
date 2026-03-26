@@ -140,8 +140,12 @@ contract Express is
     // Monotonically increasing nonce for unique queue entry IDs
     uint256 private _nonce;
 
-    // Escrowed token balances for banned users whose cancel refunds could not be transferred directly
-    mapping(address => uint256) public escrowBalance;
+    // Escrowed token balances for banned users whose cancel redeem refunds could not be transferred directly
+    mapping(address => uint256) public redeemEscrowBalance;
+
+    // Escrowed deposit asset balances for banned users whose cancel deposit refunds could not be transferred directly
+    // user => asset => amount
+    mapping(address => mapping(address => uint256)) public depositEscrowBalance;
 
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
@@ -245,10 +249,14 @@ contract Express is
     event KycGranted(address[] addresses);
     // Event for revoking KYC status from multiple addresses
     event KycRevoked(address[] addresses);
-    // Event for escrowing tokens when a banned user's cancel refund cannot be transferred
-    event EscrowDeposit(address indexed account, uint256 amount);
+    // Event for escrowing tokens when a banned user's cancel redeem refund cannot be transferred
+    event RedeemEscrowIn(address indexed account, uint256 amount);
     // Event for claiming escrowed tokens
-    event EscrowClaimed(address indexed account, uint256 amount);
+    event RedeemEscrowOut(address indexed account, uint256 amount);
+    // Event for escrowing deposit assets when a banned user's cancel deposit refund cannot be transferred
+    event DepositEscrowIn(address indexed account, address indexed asset, uint256 amount);
+    // Event for claiming escrowed deposit assets
+    event DepositEscrowOut(address indexed account, address indexed asset, uint256 amount);
 
     /*//////////////////////////////////////////////////////////////
                                  ERRORS
@@ -646,88 +654,14 @@ contract Express is
                 --_len;
             }
 
-            IERC20(asset).safeTransfer(sender, refundAmt);
+            if (token.isBanned(sender)) {
+                depositEscrowBalance[sender][asset] += refundAmt;
+                emit DepositEscrowIn(sender, asset, refundAmt);
+            } else {
+                IERC20(asset).safeTransfer(sender, refundAmt);
+            }
 
             emit CancelProcessDeposit(asset, sender, receiver, netAssets, feeAmt, prevId);
-        }
-    }
-
-    /**
-     * @notice Preview how much liquidity is needed to cancel the next queued deposits
-     * @dev Aggregates refund requirements by asset for the first `_len` items in FIFO order
-     *      Operations must reserve liquidity for redeem requests first and only treat surplus
-     *      balance as available for deposit cancellation refunds.
-     * @param _len Number of queued deposits to inspect (0 = all)
-     * @return assets Unique asset addresses across the selected queue slice
-     * @return refundAmts Total refund required per asset
-     * @return currentBalances Current Express balance per asset
-     * @return shortfalls Additional amount needed per asset before cancellation can succeed
-     */
-    function prepareDepositCancellation(
-        uint256 _len
-    )
-        external
-        view
-        returns (
-            address[] memory assets,
-            uint256[] memory refundAmts,
-            uint256[] memory currentBalances,
-            uint256[] memory shortfalls
-        )
-    {
-        uint256 queueLen = _validateQueueProcessing(depositQueue.length(), _len);
-        address[] memory tempAssets = new address[](queueLen);
-        uint256[] memory tempRefundAmts = new uint256[](queueLen);
-
-        uint256 assetCount;
-        for (uint256 i; i < queueLen; ) {
-            bytes memory data = bytes(depositQueue.at(i));
-            (address asset, , , uint256 netAssets, uint256 feeAmt, ) = _decodeDepositData(data);
-            uint256 refundAmt = netAssets + feeAmt;
-
-            bool found;
-            for (uint256 j; j < assetCount; ) {
-                if (tempAssets[j] == asset) {
-                    tempRefundAmts[j] += refundAmt;
-                    found = true;
-                    break;
-                }
-                unchecked {
-                    ++j;
-                }
-            }
-
-            if (!found) {
-                tempAssets[assetCount] = asset;
-                tempRefundAmts[assetCount] = refundAmt;
-                unchecked {
-                    ++assetCount;
-                }
-            }
-
-            unchecked {
-                ++i;
-            }
-        }
-
-        currentBalances = new uint256[](assetCount);
-        shortfalls = new uint256[](assetCount);
-        assets = new address[](assetCount);
-        refundAmts = new uint256[](assetCount);
-
-        for (uint256 i; i < assetCount; ) {
-            assets[i] = tempAssets[i];
-            refundAmts[i] = tempRefundAmts[i];
-
-            uint256 currentBalance = getTokenBalance(assets[i]);
-            currentBalances[i] = currentBalance;
-            if (currentBalance < refundAmts[i]) {
-                shortfalls[i] = refundAmts[i] - currentBalance;
-            }
-
-            unchecked {
-                ++i;
-            }
         }
     }
 
@@ -1064,12 +998,29 @@ contract Express is
      */
     function claimEscrow(address _account) external {
         address account = hasRole(OPERATOR_ROLE, msg.sender) ? _account : msg.sender;
-        uint256 amount = escrowBalance[account];
+        uint256 amount = redeemEscrowBalance[account];
         if (amount == 0) revert InvalidAmount();
 
-        escrowBalance[account] = 0;
+        redeemEscrowBalance[account] = 0;
         IERC20(address(token)).safeTransfer(account, amount);
-        emit EscrowClaimed(account, amount);
+        emit RedeemEscrowOut(account, amount);
+    }
+
+    /**
+     * @notice Claim escrowed deposit assets from cancelled deposits that could not be refunded directly
+     * @dev Deposit assets are escrowed when cancelDeposit() cannot transfer back to the sender (e.g. sender was banned)
+     * @dev Can be called by the escrowed user directly or by an operator on their behalf
+     * @param _account Address to claim escrow for (ignored when caller is not OPERATOR_ROLE, uses msg.sender)
+     * @param _asset Address of the deposit asset to claim
+     */
+    function claimDepositEscrow(address _account, address _asset) external {
+        address account = hasRole(OPERATOR_ROLE, msg.sender) ? _account : msg.sender;
+        uint256 amount = depositEscrowBalance[account][_asset];
+        if (amount == 0) revert InvalidAmount();
+
+        depositEscrowBalance[account][_asset] = 0;
+        IERC20(_asset).safeTransfer(account, amount);
+        emit DepositEscrowOut(account, _asset, amount);
     }
 
     /**
@@ -1488,8 +1439,8 @@ contract Express is
      */
     function _refundOrEscrow(address _sender, uint256 _amount) internal {
         if (token.isBanned(_sender)) {
-            escrowBalance[_sender] += _amount;
-            emit EscrowDeposit(_sender, _amount);
+            redeemEscrowBalance[_sender] += _amount;
+            emit RedeemEscrowIn(_sender, _amount);
         } else {
             IERC20(address(token)).safeTransfer(_sender, _amount);
         }
@@ -1649,5 +1600,5 @@ contract Express is
      * @dev Storage gap for future upgrades
      * See https://docs.openzeppelin.com/contracts/4.x/upgradeable#storage_gaps
      */
-    uint256[39] private __gap;
+    uint256[38] private __gap;
 }

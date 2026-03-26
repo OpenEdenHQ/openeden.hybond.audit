@@ -206,7 +206,7 @@ describe('Express - Comprehensive Tests', function () {
 
         await expect(
           express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address)
-        ).to.be.revertedWith('Pausable: Deposit paused');
+        ).to.be.revertedWithCustomError(express, 'PausedDeposit1');
       });
 
       it('should allow depositing after unpause', async function () {
@@ -224,29 +224,6 @@ describe('Express - Comprehensive Tests', function () {
     });
 
     describe('Deposit Cancellation Guardrails', function () {
-      it('should sum required refund amounts for the next queued cancellations', async function () {
-        const { express, usdo, user1, user2, maintainer } = await loadFixture(deployFixture);
-
-        await express.connect(maintainer).updateDepositFeeRate(100);
-
-        const amount1 = ethers.parseUnits('1000', 18);
-        const amount2 = ethers.parseUnits('2000', 18);
-        await express
-          .connect(user1)
-          .requestDeposit(await usdo.getAddress(), amount1, user1.address);
-        await express
-          .connect(user2)
-          .requestDeposit(await usdo.getAddress(), amount2, user2.address);
-
-        const [assets, refundAmts, currentBalances, shortfalls] =
-          await express.prepareDepositCancellation(2);
-
-        expect(assets).to.deep.equal([await usdo.getAddress()]);
-        expect(refundAmts).to.deep.equal([amount1 + amount2]);
-        expect(currentBalances).to.deep.equal([await usdo.balanceOf(await express.getAddress())]);
-        expect(shortfalls).to.deep.equal([0n]);
-      });
-
       it('should revert cancellation when Express lacks refund liquidity', async function () {
         const { express, usdo, user1, maintainer, operator } = await loadFixture(deployFixture);
 
@@ -259,24 +236,6 @@ describe('Express - Comprehensive Tests', function () {
           express,
           'InsufficientLiquidity'
         );
-      });
-
-      it('should report the shortfall before cancellation can succeed', async function () {
-        const { express, usdo, user1, operator } = await loadFixture(deployFixture);
-
-        const startingLiquidity = await usdo.balanceOf(await express.getAddress());
-        await express.connect(operator).offRamp(startingLiquidity);
-
-        const amount = ethers.parseUnits('1000', 18);
-        await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
-
-        const [assets, refundAmts, currentBalances, shortfalls] =
-          await express.prepareDepositCancellation(1);
-
-        expect(assets).to.deep.equal([await usdo.getAddress()]);
-        expect(refundAmts).to.deep.equal([amount]);
-        expect(currentBalances).to.deep.equal([0n]);
-        expect(shortfalls).to.deep.equal([amount]);
       });
 
       it('should refund on-chain after funds are returned to Express', async function () {
@@ -306,6 +265,111 @@ describe('Express - Comprehensive Tests', function () {
         expect(await express.getDepositQueueLength()).to.equal(0);
         expect(await express.getDepositUserInfo(user1.address)).to.equal(0);
         expect(await usdo.balanceOf(expressAddress)).to.equal(startingLiquidity);
+      });
+
+      it('should escrow deposit assets when cancelling deposit for banned user', async function () {
+        const { express, usdo, oem, user1, maintainer, admin } = await loadFixture(deployFixture);
+
+        const amount = ethers.parseUnits('1000', 18);
+        await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
+
+        // Ban user1
+        const BANLIST_ROLE = await oem.BANLIST_ROLE();
+        await oem.connect(admin).grantRole(BANLIST_ROLE, admin.address);
+        await oem.connect(admin).banAddresses([user1.address]);
+
+        const userBalanceBefore = await usdo.balanceOf(user1.address);
+        const usdoAddress = await usdo.getAddress();
+
+        await expect(express.connect(maintainer).cancelDeposit(1))
+          .to.emit(express, 'DepositEscrowIn')
+          .withArgs(user1.address, usdoAddress, amount);
+
+        // User balance unchanged (assets escrowed, not transferred)
+        expect(await usdo.balanceOf(user1.address)).to.equal(userBalanceBefore);
+
+        // Escrow balance recorded
+        expect(await express.depositEscrowBalance(user1.address, usdoAddress)).to.equal(amount);
+
+        // Queue should be empty
+        expect(await express.getDepositQueueLength()).to.equal(0);
+      });
+
+      it('should allow user to claim deposit escrow after unban', async function () {
+        const { express, usdo, oem, user1, maintainer, admin } = await loadFixture(deployFixture);
+
+        const amount = ethers.parseUnits('1000', 18);
+        await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
+
+        // Ban, cancel, then unban
+        const BANLIST_ROLE = await oem.BANLIST_ROLE();
+        await oem.connect(admin).grantRole(BANLIST_ROLE, admin.address);
+        await oem.connect(admin).banAddresses([user1.address]);
+        await express.connect(maintainer).cancelDeposit(1);
+        await oem.connect(admin).unbanAddresses([user1.address]);
+
+        const usdoAddress = await usdo.getAddress();
+        const userBalanceBefore = await usdo.balanceOf(user1.address);
+
+        await expect(express.connect(user1).claimDepositEscrow(user1.address, usdoAddress))
+          .to.emit(express, 'DepositEscrowOut')
+          .withArgs(user1.address, usdoAddress, amount);
+
+        expect(await usdo.balanceOf(user1.address)).to.equal(userBalanceBefore + amount);
+        expect(await express.depositEscrowBalance(user1.address, usdoAddress)).to.equal(0);
+      });
+
+      it('should allow operator to claim deposit escrow on behalf of user', async function () {
+        const { express, usdo, oem, user1, maintainer, admin, operator } =
+          await loadFixture(deployFixture);
+
+        const amount = ethers.parseUnits('1000', 18);
+        await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
+
+        // Ban, cancel, then unban
+        const BANLIST_ROLE = await oem.BANLIST_ROLE();
+        await oem.connect(admin).grantRole(BANLIST_ROLE, admin.address);
+        await oem.connect(admin).banAddresses([user1.address]);
+        await express.connect(maintainer).cancelDeposit(1);
+        await oem.connect(admin).unbanAddresses([user1.address]);
+
+        const usdoAddress = await usdo.getAddress();
+        const userBalanceBefore = await usdo.balanceOf(user1.address);
+
+        await expect(express.connect(operator).claimDepositEscrow(user1.address, usdoAddress))
+          .to.emit(express, 'DepositEscrowOut')
+          .withArgs(user1.address, usdoAddress, amount);
+
+        // Tokens go to user1, not operator
+        expect(await usdo.balanceOf(user1.address)).to.equal(userBalanceBefore + amount);
+        expect(await express.depositEscrowBalance(user1.address, usdoAddress)).to.equal(0);
+      });
+
+      it('should revert claimDepositEscrow when no escrowed balance', async function () {
+        const { express, usdo, user1 } = await loadFixture(deployFixture);
+
+        await expect(
+          express.connect(user1).claimDepositEscrow(user1.address, await usdo.getAddress())
+        ).to.be.revertedWithCustomError(express, 'InvalidAmount');
+      });
+
+      it('should ignore _account param for non-operator callers on claimDepositEscrow', async function () {
+        const { express, usdo, oem, user1, user2, maintainer, admin } =
+          await loadFixture(deployFixture);
+
+        const amount = ethers.parseUnits('1000', 18);
+        await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
+
+        // Ban user1 and cancel
+        const BANLIST_ROLE = await oem.BANLIST_ROLE();
+        await oem.connect(admin).grantRole(BANLIST_ROLE, admin.address);
+        await oem.connect(admin).banAddresses([user1.address]);
+        await express.connect(maintainer).cancelDeposit(1);
+
+        // user2 (non-operator) tries to claim user1's deposit escrow
+        await expect(
+          express.connect(user2).claimDepositEscrow(user1.address, await usdo.getAddress())
+        ).to.be.revertedWithCustomError(express, 'InvalidAmount');
       });
     });
   });
@@ -728,14 +792,14 @@ describe('Express - Comprehensive Tests', function () {
         const userBalanceBefore = await oem.balanceOf(user1.address);
 
         await expect(express.connect(maintainer).cancelPendingRedeem(1))
-          .to.emit(express, 'EscrowDeposit')
+          .to.emit(express, 'RedeemEscrowIn')
           .withArgs(user1.address, redeemAmount);
 
         // User balance unchanged (tokens escrowed, not transferred)
         expect(await oem.balanceOf(user1.address)).to.equal(userBalanceBefore);
 
         // Escrow balance recorded
-        expect(await express.escrowBalance(user1.address)).to.equal(redeemAmount);
+        expect(await express.redeemEscrowBalance(user1.address)).to.equal(redeemAmount);
 
         // Queue should be empty
         expect(await express.getPendingRedeemQueueLength()).to.equal(0);
@@ -759,14 +823,14 @@ describe('Express - Comprehensive Tests', function () {
         const userBalanceBefore = await oem.balanceOf(user1.address);
 
         await expect(express.connect(maintainer).cancelRedeem(1))
-          .to.emit(express, 'EscrowDeposit')
+          .to.emit(express, 'RedeemEscrowIn')
           .withArgs(user1.address, redeemAmount);
 
         // User balance unchanged
         expect(await oem.balanceOf(user1.address)).to.equal(userBalanceBefore);
 
         // Escrow balance recorded
-        expect(await express.escrowBalance(user1.address)).to.equal(redeemAmount);
+        expect(await express.redeemEscrowBalance(user1.address)).to.equal(redeemAmount);
       });
     });
 
@@ -797,11 +861,11 @@ describe('Express - Comprehensive Tests', function () {
         const userBalanceBefore = await oem.balanceOf(user1.address);
 
         await expect(express.connect(user1).claimEscrow(user1.address))
-          .to.emit(express, 'EscrowClaimed')
+          .to.emit(express, 'RedeemEscrowOut')
           .withArgs(user1.address, redeemAmount);
 
         expect(await oem.balanceOf(user1.address)).to.equal(userBalanceBefore + redeemAmount);
-        expect(await express.escrowBalance(user1.address)).to.equal(0);
+        expect(await express.redeemEscrowBalance(user1.address)).to.equal(0);
       });
 
       it('should allow operator to claim escrow on behalf of user', async function () {
@@ -815,12 +879,12 @@ describe('Express - Comprehensive Tests', function () {
         const userBalanceBefore = await oem.balanceOf(user1.address);
 
         await expect(express.connect(operator).claimEscrow(user1.address))
-          .to.emit(express, 'EscrowClaimed')
+          .to.emit(express, 'RedeemEscrowOut')
           .withArgs(user1.address, redeemAmount);
 
         // Tokens go to user1, not operator
         expect(await oem.balanceOf(user1.address)).to.equal(userBalanceBefore + redeemAmount);
-        expect(await express.escrowBalance(user1.address)).to.equal(0);
+        expect(await express.redeemEscrowBalance(user1.address)).to.equal(0);
       });
 
       it('should ignore _account param for non-operator callers', async function () {
@@ -858,7 +922,9 @@ describe('Express - Comprehensive Tests', function () {
         await oem.connect(admin).banAddresses([user1.address]);
         await express.connect(maintainer).cancelPendingRedeem(2);
 
-        expect(await express.escrowBalance(user1.address)).to.equal(redeemAmount1 + redeemAmount2);
+        expect(await express.redeemEscrowBalance(user1.address)).to.equal(
+          redeemAmount1 + redeemAmount2
+        );
 
         // Unban and claim all at once
         await oem.connect(admin).unbanAddresses([user1.address]);

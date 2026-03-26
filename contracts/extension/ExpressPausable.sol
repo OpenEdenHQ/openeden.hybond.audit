@@ -13,17 +13,22 @@ abstract contract ExpressPausable {
     bool private pausedDepositState;
     bool private pausedRedeemState;
 
+    error PausedDeposit1();
+    error PausedRedeem1();
+    error NotPausedRedeem1();
+    error NotPausedDeposit1();
+
     /*//////////////////////////////////////////////////////////////
                           Paused Deposit
     //////////////////////////////////////////////////////////////*/
 
     modifier whenNotPausedDeposit() {
-        require(!pausedDeposit(), "Pausable: Deposit paused");
+        if (pausedDeposit()) revert PausedDeposit1();
         _;
     }
 
     modifier whenPausedDeposit() {
-        require(pausedDeposit(), "Pausable: Deposit not paused");
+        if (!pausedDeposit()) revert NotPausedDeposit1();
         _;
     }
 
@@ -46,12 +51,12 @@ abstract contract ExpressPausable {
     //////////////////////////////////////////////////////////////*/
 
     modifier whenNotPausedRedeem() {
-        require(!pausedRedeem(), "Pausable: Redeem paused");
+        if (pausedRedeem()) revert PausedRedeem1();
         _;
     }
 
     modifier whenPausedRedeem() {
-        require(pausedRedeem(), "Pausable: Redeem not paused");
+        if (!pausedRedeem()) revert NotPausedRedeem1();
         _;
     }
 
