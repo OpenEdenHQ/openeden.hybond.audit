@@ -82,7 +82,7 @@ describe('PriceOracle', function () {
       expect(proposer).to.equal(operator.address);
       expect(exists).to.equal(true);
 
-      await expect(priceOracle.connect(confirmer).confirmPrice())
+      await expect(priceOracle.connect(confirmer).confirmPrice(ethers.parseUnits('1.005', 18)))
         .to.emit(priceOracle, 'UpdatePrice')
         .withArgs(ethers.parseUnits('1', 18), ethers.parseUnits('1.005', 18));
 
@@ -148,6 +148,17 @@ describe('PriceOracle', function () {
       ).to.be.revertedWithCustomError(priceOracle, 'PendingPriceExists');
     });
 
+    it('should revert when confirmed price does not match pending price', async function () {
+      const { priceOracle, operator, confirmer } = await loadFixture(deployFixture);
+
+      await priceOracle.connect(operator).proposePrice(ethers.parseUnits('1.005', 18));
+
+      await expect(
+        priceOracle.connect(confirmer).confirmPrice(ethers.parseUnits('1.003', 18))
+      ).to.be.revertedWithCustomError(priceOracle, 'PriceMismatch')
+        .withArgs(ethers.parseUnits('1.003', 18), ethers.parseUnits('1.005', 18));
+    });
+
     it('should revert when confirming an expired pending price', async function () {
       const { priceOracle, operator, confirmer } = await loadFixture(deployFixture);
 
@@ -157,10 +168,9 @@ describe('PriceOracle', function () {
       const ttl = await priceOracle.PENDING_PRICE_TTL();
       await time.increaseTo(proposedAt + ttl + 1n);
 
-      await expect(priceOracle.connect(confirmer).confirmPrice()).to.be.revertedWithCustomError(
-        priceOracle,
-        'PendingPriceExpired'
-      );
+      await expect(
+        priceOracle.connect(confirmer).confirmPrice(ethers.parseUnits('1.005', 18))
+      ).to.be.revertedWithCustomError(priceOracle, 'PendingPriceExpired');
 
       expect(await priceOracle.latestAnswer()).to.equal(ethers.parseUnits('1', 18));
     });

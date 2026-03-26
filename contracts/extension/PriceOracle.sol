@@ -64,6 +64,7 @@ contract PriceOracle is Initializable, AccessControlEnumerableUpgradeable, UUPSU
     error PendingPriceNotSet();
     error PendingPriceExists();
     error PendingPriceExpired(uint256 proposedAt, uint256 expiredAt, uint256 currentTimestamp);
+    error PriceMismatch(uint256 expected, uint256 actual);
 
     uint256 public constant PENDING_PRICE_TTL = 1 days;
 
@@ -227,8 +228,9 @@ contract PriceOracle is Initializable, AccessControlEnumerableUpgradeable, UUPSU
         emit PriceProposed(latestPrice, _price, msg.sender);
     }
 
-    function confirmPrice() external onlyRole(CONFIRMER_ROLE) {
+    function confirmPrice(uint256 _expectedPrice) external onlyRole(CONFIRMER_ROLE) {
         if (!pendingPriceValue.exists) revert PendingPriceNotSet();
+        if (pendingPriceValue.value != _expectedPrice) revert PriceMismatch(_expectedPrice, pendingPriceValue.value);
         uint256 expiresAt = pendingPriceValue.proposedAt + PENDING_PRICE_TTL;
         if (block.timestamp > expiresAt) {
             revert PendingPriceExpired(pendingPriceValue.proposedAt, expiresAt, block.timestamp);
