@@ -1,15 +1,14 @@
 import { expect } from 'chai';
 import { ethers, upgrades } from 'hardhat';
 import { loadFixture } from '@nomicfoundation/hardhat-network-helpers';
-import { HardhatEthersSigner } from '@nomicfoundation/hardhat-ethers/signers';
 
 describe('AssetRegistry', function () {
   async function deployFixture() {
-    const [admin, maintainer, user1] = await ethers.getSigners();
+    const [deployer, newOwner, user1] = await ethers.getSigners();
 
     // Deploy AssetRegistry
     const AssetRegistryFactory = await ethers.getContractFactory('AssetRegistry');
-    const assetRegistry = await upgrades.deployProxy(AssetRegistryFactory, [admin.address], {
+    const assetRegistry = await upgrades.deployProxy(AssetRegistryFactory, [deployer.address], {
       kind: 'uups',
       initializer: 'initialize',
     });
@@ -31,8 +30,8 @@ describe('AssetRegistry', function () {
 
     return {
       assetRegistry,
-      admin,
-      maintainer,
+      deployer,
+      newOwner,
       user1,
       usdo,
       usdc,
@@ -42,37 +41,65 @@ describe('AssetRegistry', function () {
   }
 
   describe('Deployment & Initialization', function () {
-    it('should initialize with admin role', async function () {
-      const { assetRegistry, admin } = await loadFixture(deployFixture);
+    it('should initialize with deployer as owner', async function () {
+      const { assetRegistry, deployer } = await loadFixture(deployFixture);
 
-      const DEFAULT_ADMIN_ROLE = await assetRegistry.DEFAULT_ADMIN_ROLE();
-      expect(await assetRegistry.hasRole(DEFAULT_ADMIN_ROLE, admin.address)).to.be.true;
-    });
-
-    it('should grant MAINTAINER_ROLE and UPGRADE_ROLE to admin', async function () {
-      const { assetRegistry, admin } = await loadFixture(deployFixture);
-
-      const MAINTAINER_ROLE = await assetRegistry.MAINTAINER_ROLE();
-      const UPGRADE_ROLE = await assetRegistry.UPGRADE_ROLE();
-
-      expect(await assetRegistry.hasRole(MAINTAINER_ROLE, admin.address)).to.be.true;
-      expect(await assetRegistry.hasRole(UPGRADE_ROLE, admin.address)).to.be.true;
+      expect(await assetRegistry.owner()).to.equal(deployer.address);
     });
 
     it('should revert re-initialization', async function () {
-      const { assetRegistry, admin } = await loadFixture(deployFixture);
+      const { assetRegistry, deployer } = await loadFixture(deployFixture);
 
-      await expect(assetRegistry.initialize(admin.address)).to.be.revertedWithCustomError(
+      await expect(assetRegistry.initialize(deployer.address)).to.be.revertedWithCustomError(
         assetRegistry,
         'InvalidInitialization'
       );
     });
   });
 
+  describe('Ownership', function () {
+    it('should support two-step ownership transfer', async function () {
+      const { assetRegistry, deployer, newOwner } = await loadFixture(deployFixture);
+
+      await assetRegistry.connect(deployer).transferOwnership(newOwner.address);
+      expect(await assetRegistry.owner()).to.equal(deployer.address);
+      expect(await assetRegistry.pendingOwner()).to.equal(newOwner.address);
+
+      await assetRegistry.connect(newOwner).acceptOwnership();
+      expect(await assetRegistry.owner()).to.equal(newOwner.address);
+    });
+
+    it('should not allow non-pending owner to accept ownership', async function () {
+      const { assetRegistry, deployer, newOwner, user1 } = await loadFixture(deployFixture);
+
+      await assetRegistry.connect(deployer).transferOwnership(newOwner.address);
+
+      await expect(assetRegistry.connect(user1).acceptOwnership()).to.be.revertedWithCustomError(
+        assetRegistry,
+        'OwnableUnauthorizedAccount'
+      );
+    });
+
+    it('should not allow non-owner to transfer ownership', async function () {
+      const { assetRegistry, user1, newOwner } = await loadFixture(deployFixture);
+
+      await expect(
+        assetRegistry.connect(user1).transferOwnership(newOwner.address)
+      ).to.be.revertedWithCustomError(assetRegistry, 'OwnableUnauthorizedAccount');
+    });
+
+    it('should allow owner to renounce ownership', async function () {
+      const { assetRegistry, deployer } = await loadFixture(deployFixture);
+
+      await assetRegistry.connect(deployer).renounceOwnership();
+      expect(await assetRegistry.owner()).to.equal(ethers.ZeroAddress);
+    });
+  });
+
   describe('Asset Configuration', function () {
     describe('Adding Assets', function () {
       it('should add asset without price feed (1:1 conversion)', async function () {
-        const { assetRegistry, admin, usdo } = await loadFixture(deployFixture);
+        const { assetRegistry, deployer, usdo } = await loadFixture(deployFixture);
 
         const config = {
           asset: await usdo.getAddress(),
@@ -82,17 +109,17 @@ describe('AssetRegistry', function () {
         };
 
         // First call should emit AssetAdded
-        await expect(assetRegistry.connect(admin).setAssetConfig(config)).to.emit(
+        await expect(assetRegistry.connect(deployer).setAssetConfig(config)).to.emit(
           assetRegistry,
           'AssetAdded'
         );
 
         // Subsequent calls should emit AssetUpdated (asset already exists)
-        await expect(assetRegistry.connect(admin).setAssetConfig(config)).to.emit(
+        await expect(assetRegistry.connect(deployer).setAssetConfig(config)).to.emit(
           assetRegistry,
           'AssetUpdated'
         );
-        await expect(assetRegistry.connect(admin).setAssetConfig(config)).to.emit(
+        await expect(assetRegistry.connect(deployer).setAssetConfig(config)).to.emit(
           assetRegistry,
           'AssetUpdated'
         );
@@ -103,10 +130,10 @@ describe('AssetRegistry', function () {
       });
 
       it('should add asset with price feed', async function () {
-        const { assetRegistry, admin, usdc } = await loadFixture(deployFixture);
+        const { assetRegistry, deployer, usdc } = await loadFixture(deployFixture);
 
         // Deploy mock price feed
-        const MockPriceFeedFactory = await ethers.getContractFactory('MockERC20'); // Use any contract
+        const MockPriceFeedFactory = await ethers.getContractFactory('MockERC20');
         const priceFeed = await MockPriceFeedFactory.deploy('Feed', 'FEED', 8);
         await priceFeed.waitForDeployment();
 
@@ -117,7 +144,7 @@ describe('AssetRegistry', function () {
           isSupported: true,
         };
 
-        await expect(assetRegistry.connect(admin).setAssetConfig(config)).to.emit(
+        await expect(assetRegistry.connect(deployer).setAssetConfig(config)).to.emit(
           assetRegistry,
           'AssetAdded'
         );
@@ -126,7 +153,7 @@ describe('AssetRegistry', function () {
       });
 
       it('should track supported assets in array', async function () {
-        const { assetRegistry, admin, usdo, usdc } = await loadFixture(deployFixture);
+        const { assetRegistry, deployer, usdo, usdc } = await loadFixture(deployFixture);
 
         const config1 = {
           asset: await usdo.getAddress(),
@@ -142,8 +169,8 @@ describe('AssetRegistry', function () {
           isSupported: true,
         };
 
-        await assetRegistry.connect(admin).setAssetConfig(config1);
-        await assetRegistry.connect(admin).setAssetConfig(config2);
+        await assetRegistry.connect(deployer).setAssetConfig(config1);
+        await assetRegistry.connect(deployer).setAssetConfig(config2);
 
         const supportedAssets = await assetRegistry.getSupportedAssets();
         expect(supportedAssets).to.have.length(2);
@@ -152,7 +179,7 @@ describe('AssetRegistry', function () {
       });
 
       it('should revert if asset is zero address', async function () {
-        const { assetRegistry, admin } = await loadFixture(deployFixture);
+        const { assetRegistry, deployer } = await loadFixture(deployFixture);
 
         const config = {
           asset: ethers.ZeroAddress,
@@ -162,27 +189,27 @@ describe('AssetRegistry', function () {
         };
 
         await expect(
-          assetRegistry.connect(admin).setAssetConfig(config)
+          assetRegistry.connect(deployer).setAssetConfig(config)
         ).to.be.revertedWithCustomError(assetRegistry, 'AssetRegistryZeroAddress');
       });
 
       it('should revert if price feed is set but maxStalePeriod is zero', async function () {
-        const { assetRegistry, admin, usdo } = await loadFixture(deployFixture);
+        const { assetRegistry, deployer, usdo } = await loadFixture(deployFixture);
 
         const config = {
           asset: await usdo.getAddress(),
-          priceFeed: admin.address, // Non-zero price feed
+          priceFeed: deployer.address, // Non-zero price feed
           maxStalePeriod: 0, // Invalid: should be > 0 when price feed is set
           isSupported: true,
         };
 
         await expect(
-          assetRegistry.connect(admin).setAssetConfig(config)
+          assetRegistry.connect(deployer).setAssetConfig(config)
         ).to.be.revertedWithCustomError(assetRegistry, 'AssetRegistryInvalidStalePeriod');
       });
 
       it('should revert if asset uses more than 18 decimals', async function () {
-        const { assetRegistry, admin, exotic } = await loadFixture(deployFixture);
+        const { assetRegistry, deployer, exotic } = await loadFixture(deployFixture);
 
         const config = {
           asset: await exotic.getAddress(),
@@ -192,29 +219,29 @@ describe('AssetRegistry', function () {
         };
 
         await expect(
-          assetRegistry.connect(admin).setAssetConfig(config)
+          assetRegistry.connect(deployer).setAssetConfig(config)
         ).to.be.revertedWithCustomError(assetRegistry, 'AssetRegistryInvalidAssetDecimals');
       });
 
       it('should revert if isSupported is false for new asset', async function () {
-        const { assetRegistry, admin, usdo } = await loadFixture(deployFixture);
+        const { assetRegistry, deployer, usdo } = await loadFixture(deployFixture);
 
         const config = {
           asset: await usdo.getAddress(),
           priceFeed: ethers.ZeroAddress,
           maxStalePeriod: 0,
-          isSupported: false, // Should revert for new asset
+          isSupported: false,
         };
 
         await expect(
-          assetRegistry.connect(admin).setAssetConfig(config)
+          assetRegistry.connect(deployer).setAssetConfig(config)
         ).to.be.revertedWithCustomError(
           assetRegistry,
           'AssetRegistryUnsupportedAssetConfiguration'
         );
       });
 
-      it('should only allow MAINTAINER_ROLE to add assets', async function () {
+      it('should only allow owner to add assets', async function () {
         const { assetRegistry, user1, usdo } = await loadFixture(deployFixture);
 
         const config = {
@@ -226,13 +253,13 @@ describe('AssetRegistry', function () {
 
         await expect(
           assetRegistry.connect(user1).setAssetConfig(config)
-        ).to.be.revertedWithCustomError(assetRegistry, 'AccessControlUnauthorizedAccount');
+        ).to.be.revertedWithCustomError(assetRegistry, 'OwnableUnauthorizedAccount');
       });
     });
 
     describe('Updating Assets', function () {
       it('should update existing asset configuration', async function () {
-        const { assetRegistry, admin, usdo } = await loadFixture(deployFixture);
+        const { assetRegistry, deployer, usdo } = await loadFixture(deployFixture);
 
         const initialConfig = {
           asset: await usdo.getAddress(),
@@ -241,7 +268,7 @@ describe('AssetRegistry', function () {
           isSupported: true,
         };
 
-        await assetRegistry.connect(admin).setAssetConfig(initialConfig);
+        await assetRegistry.connect(deployer).setAssetConfig(initialConfig);
 
         // Deploy price feed
         const MockERC20Factory = await ethers.getContractFactory('MockERC20');
@@ -255,7 +282,7 @@ describe('AssetRegistry', function () {
           isSupported: true,
         };
 
-        await expect(assetRegistry.connect(admin).setAssetConfig(updatedConfig))
+        await expect(assetRegistry.connect(deployer).setAssetConfig(updatedConfig))
           .to.emit(assetRegistry, 'AssetUpdated')
           .withArgs(await usdo.getAddress(), [
             await usdo.getAddress(),
@@ -270,7 +297,7 @@ describe('AssetRegistry', function () {
       });
 
       it('should not duplicate asset in supported array when updating', async function () {
-        const { assetRegistry, admin, usdo } = await loadFixture(deployFixture);
+        const { assetRegistry, deployer, usdo } = await loadFixture(deployFixture);
 
         const config = {
           asset: await usdo.getAddress(),
@@ -279,8 +306,8 @@ describe('AssetRegistry', function () {
           isSupported: true,
         };
 
-        await assetRegistry.connect(admin).setAssetConfig(config);
-        await assetRegistry.connect(admin).setAssetConfig(config);
+        await assetRegistry.connect(deployer).setAssetConfig(config);
+        await assetRegistry.connect(deployer).setAssetConfig(config);
 
         const supportedAssets = await assetRegistry.getSupportedAssets();
         expect(supportedAssets).to.have.length(1);
@@ -289,7 +316,7 @@ describe('AssetRegistry', function () {
 
     describe('Removing Assets', function () {
       it('should remove asset from registry', async function () {
-        const { assetRegistry, admin, usdo } = await loadFixture(deployFixture);
+        const { assetRegistry, deployer, usdo } = await loadFixture(deployFixture);
 
         const config = {
           asset: await usdo.getAddress(),
@@ -298,9 +325,9 @@ describe('AssetRegistry', function () {
           isSupported: true,
         };
 
-        await assetRegistry.connect(admin).setAssetConfig(config);
+        await assetRegistry.connect(deployer).setAssetConfig(config);
 
-        await expect(assetRegistry.connect(admin).removeAsset(await usdo.getAddress()))
+        await expect(assetRegistry.connect(deployer).removeAsset(await usdo.getAddress()))
           .to.emit(assetRegistry, 'AssetRemoved')
           .withArgs(await usdo.getAddress());
 
@@ -311,15 +338,15 @@ describe('AssetRegistry', function () {
       });
 
       it('should revert if removing non-existent asset', async function () {
-        const { assetRegistry, admin, usdo } = await loadFixture(deployFixture);
+        const { assetRegistry, deployer, usdo } = await loadFixture(deployFixture);
 
         await expect(
-          assetRegistry.connect(admin).removeAsset(await usdo.getAddress())
+          assetRegistry.connect(deployer).removeAsset(await usdo.getAddress())
         ).to.be.revertedWithCustomError(assetRegistry, 'AssetRegistryAssetNotSupported');
       });
 
       it('should properly reorder array when removing middle asset', async function () {
-        const { assetRegistry, admin, usdo, usdc, wbtc } = await loadFixture(deployFixture);
+        const { assetRegistry, deployer, usdo, usdc, wbtc } = await loadFixture(deployFixture);
 
         // Add three assets
         const configs = [
@@ -344,11 +371,11 @@ describe('AssetRegistry', function () {
         ];
 
         for (const config of configs) {
-          await assetRegistry.connect(admin).setAssetConfig(config);
+          await assetRegistry.connect(deployer).setAssetConfig(config);
         }
 
         // Remove middle asset
-        await assetRegistry.connect(admin).removeAsset(await usdc.getAddress());
+        await assetRegistry.connect(deployer).removeAsset(await usdc.getAddress());
 
         const supportedAssets = await assetRegistry.getSupportedAssets();
         expect(supportedAssets).to.have.length(2);
@@ -357,8 +384,8 @@ describe('AssetRegistry', function () {
         expect(supportedAssets).to.not.include(await usdc.getAddress());
       });
 
-      it('should only allow MAINTAINER_ROLE to remove assets', async function () {
-        const { assetRegistry, admin, user1, usdo } = await loadFixture(deployFixture);
+      it('should only allow owner to remove assets', async function () {
+        const { assetRegistry, deployer, user1, usdo } = await loadFixture(deployFixture);
 
         const config = {
           asset: await usdo.getAddress(),
@@ -367,11 +394,11 @@ describe('AssetRegistry', function () {
           isSupported: true,
         };
 
-        await assetRegistry.connect(admin).setAssetConfig(config);
+        await assetRegistry.connect(deployer).setAssetConfig(config);
 
         await expect(
           assetRegistry.connect(user1).removeAsset(await usdo.getAddress())
-        ).to.be.revertedWithCustomError(assetRegistry, 'AccessControlUnauthorizedAccount');
+        ).to.be.revertedWithCustomError(assetRegistry, 'OwnableUnauthorizedAccount');
       });
     });
   });
@@ -379,7 +406,7 @@ describe('AssetRegistry', function () {
   describe('Conversion Functions', function () {
     describe('Without Price Feed (1:1)', function () {
       it('should convert 18-decimal asset to USDO (1:1)', async function () {
-        const { assetRegistry, admin, usdo } = await loadFixture(deployFixture);
+        const { assetRegistry, deployer, usdo } = await loadFixture(deployFixture);
 
         const config = {
           asset: await usdo.getAddress(),
@@ -388,7 +415,7 @@ describe('AssetRegistry', function () {
           isSupported: true,
         };
 
-        await assetRegistry.connect(admin).setAssetConfig(config);
+        await assetRegistry.connect(deployer).setAssetConfig(config);
 
         const amount = ethers.parseUnits('1000', 18);
         const converted = await assetRegistry.convertFromUnderlying(
@@ -400,7 +427,7 @@ describe('AssetRegistry', function () {
       });
 
       it('should scale 6-decimal asset (USDC) to 18-decimal USDO', async function () {
-        const { assetRegistry, admin, usdc } = await loadFixture(deployFixture);
+        const { assetRegistry, deployer, usdc } = await loadFixture(deployFixture);
 
         const config = {
           asset: await usdc.getAddress(),
@@ -409,7 +436,7 @@ describe('AssetRegistry', function () {
           isSupported: true,
         };
 
-        await assetRegistry.connect(admin).setAssetConfig(config);
+        await assetRegistry.connect(deployer).setAssetConfig(config);
 
         const amount = ethers.parseUnits('1000', 6); // 1000 USDC
         const converted = await assetRegistry.convertFromUnderlying(
@@ -421,7 +448,7 @@ describe('AssetRegistry', function () {
       });
 
       it('should scale 8-decimal asset (WBTC) to 18-decimal USDO', async function () {
-        const { assetRegistry, admin, wbtc } = await loadFixture(deployFixture);
+        const { assetRegistry, deployer, wbtc } = await loadFixture(deployFixture);
 
         const config = {
           asset: await wbtc.getAddress(),
@@ -430,7 +457,7 @@ describe('AssetRegistry', function () {
           isSupported: true,
         };
 
-        await assetRegistry.connect(admin).setAssetConfig(config);
+        await assetRegistry.connect(deployer).setAssetConfig(config);
 
         const amount = ethers.parseUnits('10', 8); // 10 WBTC
         const converted = await assetRegistry.convertFromUnderlying(
@@ -442,7 +469,7 @@ describe('AssetRegistry', function () {
       });
 
       it('should convert USDO to underlying asset (reverse)', async function () {
-        const { assetRegistry, admin, usdc } = await loadFixture(deployFixture);
+        const { assetRegistry, deployer, usdc } = await loadFixture(deployFixture);
 
         const config = {
           asset: await usdc.getAddress(),
@@ -451,7 +478,7 @@ describe('AssetRegistry', function () {
           isSupported: true,
         };
 
-        await assetRegistry.connect(admin).setAssetConfig(config);
+        await assetRegistry.connect(deployer).setAssetConfig(config);
 
         const usdoAmount = ethers.parseUnits('1000', 18);
         const converted = await assetRegistry.convertToUnderlying(
@@ -463,7 +490,7 @@ describe('AssetRegistry', function () {
       });
 
       it('should handle dust amounts correctly', async function () {
-        const { assetRegistry, admin, usdo } = await loadFixture(deployFixture);
+        const { assetRegistry, deployer, usdo } = await loadFixture(deployFixture);
 
         const config = {
           asset: await usdo.getAddress(),
@@ -472,7 +499,7 @@ describe('AssetRegistry', function () {
           isSupported: true,
         };
 
-        await assetRegistry.connect(admin).setAssetConfig(config);
+        await assetRegistry.connect(deployer).setAssetConfig(config);
 
         const dustAmount = 1n; // 1 wei
         const converted = await assetRegistry.convertFromUnderlying(
@@ -484,7 +511,7 @@ describe('AssetRegistry', function () {
       });
 
       it('should handle very large amounts', async function () {
-        const { assetRegistry, admin, usdo } = await loadFixture(deployFixture);
+        const { assetRegistry, deployer, usdo } = await loadFixture(deployFixture);
 
         const config = {
           asset: await usdo.getAddress(),
@@ -493,7 +520,7 @@ describe('AssetRegistry', function () {
           isSupported: true,
         };
 
-        await assetRegistry.connect(admin).setAssetConfig(config);
+        await assetRegistry.connect(deployer).setAssetConfig(config);
 
         const largeAmount = ethers.parseUnits('1000000000', 18); // 1 billion
         const converted = await assetRegistry.convertFromUnderlying(
@@ -505,7 +532,7 @@ describe('AssetRegistry', function () {
       });
 
       it('should handle zero amount', async function () {
-        const { assetRegistry, admin, usdo } = await loadFixture(deployFixture);
+        const { assetRegistry, deployer, usdo } = await loadFixture(deployFixture);
 
         const config = {
           asset: await usdo.getAddress(),
@@ -514,7 +541,7 @@ describe('AssetRegistry', function () {
           isSupported: true,
         };
 
-        await assetRegistry.connect(admin).setAssetConfig(config);
+        await assetRegistry.connect(deployer).setAssetConfig(config);
 
         const converted = await assetRegistry.convertFromUnderlying(await usdo.getAddress(), 0);
 
@@ -547,7 +574,7 @@ describe('AssetRegistry', function () {
 
   describe('View Functions', function () {
     it('should return asset configuration', async function () {
-      const { assetRegistry, admin, usdo } = await loadFixture(deployFixture);
+      const { assetRegistry, deployer, usdo } = await loadFixture(deployFixture);
 
       const config = {
         asset: await usdo.getAddress(),
@@ -556,7 +583,7 @@ describe('AssetRegistry', function () {
         isSupported: true,
       };
 
-      await assetRegistry.connect(admin).setAssetConfig(config);
+      await assetRegistry.connect(deployer).setAssetConfig(config);
 
       const storedConfig = await assetRegistry.getAssetConfig(await usdo.getAddress());
       expect(storedConfig.asset).to.equal(config.asset);
@@ -574,7 +601,7 @@ describe('AssetRegistry', function () {
     });
 
     it('should return supported status correctly', async function () {
-      const { assetRegistry, admin, usdo } = await loadFixture(deployFixture);
+      const { assetRegistry, deployer, usdo } = await loadFixture(deployFixture);
 
       expect(await assetRegistry.isAssetSupported(await usdo.getAddress())).to.be.false;
 
@@ -585,13 +612,13 @@ describe('AssetRegistry', function () {
         isSupported: true,
       };
 
-      await assetRegistry.connect(admin).setAssetConfig(config);
+      await assetRegistry.connect(deployer).setAssetConfig(config);
 
       expect(await assetRegistry.isAssetSupported(await usdo.getAddress())).to.be.true;
     });
 
     it('should return all supported assets', async function () {
-      const { assetRegistry, admin, usdo, usdc } = await loadFixture(deployFixture);
+      const { assetRegistry, deployer, usdo, usdc } = await loadFixture(deployFixture);
 
       expect(await assetRegistry.getSupportedAssets()).to.have.length(0);
 
@@ -609,8 +636,8 @@ describe('AssetRegistry', function () {
         isSupported: true,
       };
 
-      await assetRegistry.connect(admin).setAssetConfig(config1);
-      await assetRegistry.connect(admin).setAssetConfig(config2);
+      await assetRegistry.connect(deployer).setAssetConfig(config1);
+      await assetRegistry.connect(deployer).setAssetConfig(config2);
 
       const assets = await assetRegistry.getSupportedAssets();
       expect(assets).to.have.length(2);
@@ -620,8 +647,8 @@ describe('AssetRegistry', function () {
   });
 
   describe('Upgradeability', function () {
-    it('should allow UPGRADE_ROLE to upgrade', async function () {
-      const { assetRegistry, admin } = await loadFixture(deployFixture);
+    it('should allow owner to upgrade', async function () {
+      const { assetRegistry } = await loadFixture(deployFixture);
 
       const AssetRegistryV2Factory = await ethers.getContractFactory('AssetRegistry');
 
@@ -630,7 +657,7 @@ describe('AssetRegistry', function () {
     });
 
     it('should preserve state after upgrade', async function () {
-      const { assetRegistry, admin, usdo } = await loadFixture(deployFixture);
+      const { assetRegistry, deployer, usdo } = await loadFixture(deployFixture);
 
       const config = {
         asset: await usdo.getAddress(),
@@ -639,7 +666,7 @@ describe('AssetRegistry', function () {
         isSupported: true,
       };
 
-      await assetRegistry.connect(admin).setAssetConfig(config);
+      await assetRegistry.connect(deployer).setAssetConfig(config);
 
       const AssetRegistryV2Factory = await ethers.getContractFactory('AssetRegistry');
       const upgraded = await upgrades.upgradeProxy(
@@ -650,7 +677,7 @@ describe('AssetRegistry', function () {
       expect(await upgraded.isAssetSupported(await usdo.getAddress())).to.be.true;
     });
 
-    it('should revert if non-UPGRADE_ROLE tries to upgrade', async function () {
+    it('should revert if non-owner tries to upgrade', async function () {
       const { assetRegistry, user1 } = await loadFixture(deployFixture);
 
       const AssetRegistryV2Factory = await ethers.getContractFactory('AssetRegistry');
@@ -659,13 +686,13 @@ describe('AssetRegistry', function () {
 
       await expect(
         assetRegistry.connect(user1).upgradeToAndCall(await newImpl.getAddress(), '0x')
-      ).to.be.revertedWithCustomError(assetRegistry, 'AccessControlUnauthorizedAccount');
+      ).to.be.revertedWithCustomError(assetRegistry, 'OwnableUnauthorizedAccount');
     });
   });
 
   describe('Edge Cases', function () {
     it('should handle adding and removing same asset multiple times', async function () {
-      const { assetRegistry, admin, usdo } = await loadFixture(deployFixture);
+      const { assetRegistry, deployer, usdo } = await loadFixture(deployFixture);
 
       const config = {
         asset: await usdo.getAddress(),
@@ -675,20 +702,20 @@ describe('AssetRegistry', function () {
       };
 
       // Add
-      await assetRegistry.connect(admin).setAssetConfig(config);
+      await assetRegistry.connect(deployer).setAssetConfig(config);
       expect(await assetRegistry.isAssetSupported(await usdo.getAddress())).to.be.true;
 
       // Remove
-      await assetRegistry.connect(admin).removeAsset(await usdo.getAddress());
+      await assetRegistry.connect(deployer).removeAsset(await usdo.getAddress());
       expect(await assetRegistry.isAssetSupported(await usdo.getAddress())).to.be.false;
 
       // Add again
-      await assetRegistry.connect(admin).setAssetConfig(config);
+      await assetRegistry.connect(deployer).setAssetConfig(config);
       expect(await assetRegistry.isAssetSupported(await usdo.getAddress())).to.be.true;
     });
 
     it('should handle maximum supported assets', async function () {
-      const { assetRegistry, admin } = await loadFixture(deployFixture);
+      const { assetRegistry, deployer } = await loadFixture(deployFixture);
 
       const MockERC20Factory = await ethers.getContractFactory('MockERC20');
 
@@ -704,7 +731,7 @@ describe('AssetRegistry', function () {
           isSupported: true,
         };
 
-        await assetRegistry.connect(admin).setAssetConfig(config);
+        await assetRegistry.connect(deployer).setAssetConfig(config);
       }
 
       const supportedAssets = await assetRegistry.getSupportedAssets();
@@ -713,7 +740,7 @@ describe('AssetRegistry', function () {
   });
 
   describe('Access Control', function () {
-    it('should enforce MAINTAINER_ROLE for configuration changes', async function () {
+    it('should enforce owner-only for configuration changes', async function () {
       const { assetRegistry, user1, usdo } = await loadFixture(deployFixture);
 
       const config = {
@@ -723,21 +750,34 @@ describe('AssetRegistry', function () {
         isSupported: true,
       };
 
-      const MAINTAINER_ROLE = await assetRegistry.MAINTAINER_ROLE();
-
       await expect(
         assetRegistry.connect(user1).setAssetConfig(config)
-      ).to.be.revertedWithCustomError(assetRegistry, 'AccessControlUnauthorizedAccount');
+      ).to.be.revertedWithCustomError(assetRegistry, 'OwnableUnauthorizedAccount');
     });
 
-    it('should allow DEFAULT_ADMIN_ROLE to grant MAINTAINER_ROLE', async function () {
-      const { assetRegistry, admin, user1 } = await loadFixture(deployFixture);
+    it('should allow new owner to manage assets after ownership transfer', async function () {
+      const { assetRegistry, deployer, newOwner, usdo } = await loadFixture(deployFixture);
 
-      const MAINTAINER_ROLE = await assetRegistry.MAINTAINER_ROLE();
+      // Transfer ownership
+      await assetRegistry.connect(deployer).transferOwnership(newOwner.address);
+      await assetRegistry.connect(newOwner).acceptOwnership();
 
-      await assetRegistry.connect(admin).grantRole(MAINTAINER_ROLE, user1.address);
+      const config = {
+        asset: await usdo.getAddress(),
+        priceFeed: ethers.ZeroAddress,
+        maxStalePeriod: 0,
+        isSupported: true,
+      };
 
-      expect(await assetRegistry.hasRole(MAINTAINER_ROLE, user1.address)).to.be.true;
+      await expect(assetRegistry.connect(newOwner).setAssetConfig(config)).to.emit(
+        assetRegistry,
+        'AssetAdded'
+      );
+
+      // Old owner should no longer have access
+      await expect(
+        assetRegistry.connect(deployer).removeAsset(await usdo.getAddress())
+      ).to.be.revertedWithCustomError(assetRegistry, 'OwnableUnauthorizedAccount');
     });
   });
 });

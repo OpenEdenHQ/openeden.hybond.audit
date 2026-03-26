@@ -2,7 +2,8 @@
 pragma solidity ^0.8.20;
 
 import { UUPSUpgradeable } from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import { AccessControlUpgradeable } from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import { Ownable2StepUpgradeable } from "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
+
 import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
 import "../interfaces/IAssetRegistry.sol";
@@ -12,7 +13,7 @@ import "../interfaces/IPriceFeed.sol";
  * @title AssetRegistry
  * @notice Simple registry for managing supported underlying assets with price oracles
  */
-contract AssetRegistry is IAssetRegistry, UUPSUpgradeable, AccessControlUpgradeable {
+contract AssetRegistry is IAssetRegistry, UUPSUpgradeable, Ownable2StepUpgradeable {
     using Math for uint256;
 
     // Custom errors
@@ -23,9 +24,6 @@ contract AssetRegistry is IAssetRegistry, UUPSUpgradeable, AccessControlUpgradea
     error AssetRegistryInvalidAssetDecimals(uint8 decimals);
     error AssetRegistryStalePriceData(uint256 updatedAt, uint256 currentTime, uint256 maxStale);
     error AssetRegistryUnsupportedAssetConfiguration();
-
-    bytes32 public constant MAINTAINER_ROLE = keccak256("MAINTAINER_ROLE");
-    bytes32 public constant UPGRADE_ROLE = keccak256("UPGRADE_ROLE");
 
     // Constants
     uint256 private constant DECIMALS = 18;
@@ -40,17 +38,13 @@ contract AssetRegistry is IAssetRegistry, UUPSUpgradeable, AccessControlUpgradea
         _disableInitializers();
     }
 
-    function initialize(address admin) external initializer {
-        __AccessControl_init();
+    function initialize(address _owner) external initializer {
+        __Ownable_init(_owner);
+        __Ownable2Step_init();
         __UUPSUpgradeable_init();
-
-        _grantRole(DEFAULT_ADMIN_ROLE, admin);
-        _grantRole(MAINTAINER_ROLE, admin);
-        _grantRole(MAINTAINER_ROLE, msg.sender);
-        _grantRole(UPGRADE_ROLE, admin);
     }
 
-    function _authorizeUpgrade(address) internal override onlyRole(UPGRADE_ROLE) {}
+    function _authorizeUpgrade(address) internal override onlyOwner {}
 
     /**
      * @notice Get fresh price from price feed with staleness check
@@ -79,7 +73,7 @@ contract AssetRegistry is IAssetRegistry, UUPSUpgradeable, AccessControlUpgradea
         decimals = IPriceFeed(priceFeed).decimals();
     }
 
-    function setAssetConfig(AssetConfig calldata config) external onlyRole(MAINTAINER_ROLE) {
+    function setAssetConfig(AssetConfig calldata config) external onlyOwner {
         address asset = config.asset;
         if (asset == address(0)) revert AssetRegistryZeroAddress();
 
@@ -106,7 +100,7 @@ contract AssetRegistry is IAssetRegistry, UUPSUpgradeable, AccessControlUpgradea
         }
     }
 
-    function removeAsset(address asset) external onlyRole(MAINTAINER_ROLE) {
+    function removeAsset(address asset) external onlyOwner {
         if (!_assetConfigs[asset].isSupported) revert AssetRegistryAssetNotSupported(asset);
 
         _assetConfigs[asset].isSupported = false;
