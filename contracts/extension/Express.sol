@@ -1059,14 +1059,17 @@ contract Express is
     /**
      * @notice Claim escrowed tokens from cancelled redemptions that could not be refunded directly
      * @dev Tokens are escrowed when cancel() cannot transfer back to the sender (e.g. sender was banned)
+     * @dev Can be called by the escrowed user directly or by an operator on their behalf
+     * @param _account Address to claim escrow for (ignored when caller is not OPERATOR_ROLE, uses msg.sender)
      */
-    function claimEscrow() external {
-        uint256 amount = escrowBalance[msg.sender];
+    function claimEscrow(address _account) external {
+        address account = hasRole(OPERATOR_ROLE, msg.sender) ? _account : msg.sender;
+        uint256 amount = escrowBalance[account];
         if (amount == 0) revert InvalidAmount();
 
-        escrowBalance[msg.sender] = 0;
-        IERC20(address(token)).safeTransfer(msg.sender, amount);
-        emit EscrowClaimed(msg.sender, amount);
+        escrowBalance[account] = 0;
+        IERC20(address(token)).safeTransfer(account, amount);
+        emit EscrowClaimed(account, amount);
     }
 
     /**

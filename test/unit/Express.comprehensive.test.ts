@@ -796,7 +796,7 @@ describe('Express - Comprehensive Tests', function () {
 
         const userBalanceBefore = await oem.balanceOf(user1.address);
 
-        await expect(express.connect(user1).claimEscrow())
+        await expect(express.connect(user1).claimEscrow(user1.address))
           .to.emit(express, 'EscrowClaimed')
           .withArgs(user1.address, redeemAmount);
 
@@ -804,13 +804,41 @@ describe('Express - Comprehensive Tests', function () {
         expect(await express.escrowBalance(user1.address)).to.equal(0);
       });
 
+      it('should allow operator to claim escrow on behalf of user', async function () {
+        const fixture = await loadFixture(deployFixture);
+        const { express, user1, oem, admin, operator, redeemAmount } =
+          await setupEscrowedUser(fixture);
+
+        // Unban user1 so they can receive tokens
+        await oem.connect(admin).unbanAddresses([user1.address]);
+
+        const userBalanceBefore = await oem.balanceOf(user1.address);
+
+        await expect(express.connect(operator).claimEscrow(user1.address))
+          .to.emit(express, 'EscrowClaimed')
+          .withArgs(user1.address, redeemAmount);
+
+        // Tokens go to user1, not operator
+        expect(await oem.balanceOf(user1.address)).to.equal(userBalanceBefore + redeemAmount);
+        expect(await express.escrowBalance(user1.address)).to.equal(0);
+      });
+
+      it('should ignore _account param for non-operator callers', async function () {
+        const fixture = await loadFixture(deployFixture);
+        const { express, user1, user2 } = await setupEscrowedUser(fixture);
+
+        // user2 (non-operator) tries to claim user1's escrow by passing user1's address
+        await expect(
+          express.connect(user2).claimEscrow(user1.address)
+        ).to.be.revertedWithCustomError(express, 'InvalidAmount');
+      });
+
       it('should revert claimEscrow when no escrowed balance', async function () {
         const { express, user1 } = await loadFixture(deployFixture);
 
-        await expect(express.connect(user1).claimEscrow()).to.be.revertedWithCustomError(
-          express,
-          'InvalidAmount'
-        );
+        await expect(
+          express.connect(user1).claimEscrow(user1.address)
+        ).to.be.revertedWithCustomError(express, 'InvalidAmount');
       });
 
       it('should accumulate escrow across multiple cancelled redeems', async function () {
@@ -836,7 +864,7 @@ describe('Express - Comprehensive Tests', function () {
         await oem.connect(admin).unbanAddresses([user1.address]);
 
         const balanceBefore = await oem.balanceOf(user1.address);
-        await express.connect(user1).claimEscrow();
+        await express.connect(user1).claimEscrow(user1.address);
         expect(await oem.balanceOf(user1.address)).to.equal(
           balanceBefore + redeemAmount1 + redeemAmount2
         );
