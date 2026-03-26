@@ -514,18 +514,18 @@ contract Express is
      * @param _amount The amount of asset token
      * @return netAmt Net amount after fees
      * @return feeAmt Fee amount
-     * @return mintAmt token amount to be minted
+     * @return netMintAmt Net token amount to be minted after fees
      */
     function previewDeposit(
         address _asset,
         uint256 _amount
-    ) public view returns (uint256 netAmt, uint256 feeAmt, uint256 mintAmt) {
+    ) public view returns (uint256 netAmt, uint256 feeAmt, uint256 netMintAmt) {
         feeAmt = txsFee(_amount, TxType.DEPOSIT);
         netAmt = _amount - feeAmt;
         uint256 amt = convertFromUnderlying(_asset, netAmt);
 
         uint256 price = getPrice();
-        mintAmt = _trim(Math.mulDiv(amt, 1e18, price));
+        netMintAmt = _trim(Math.mulDiv(amt, 1e18, price));
     }
 
     /**
@@ -820,14 +820,18 @@ contract Express is
      * @param _shareAmount The amount of share to redeem
      * @return feeAmt Platform fee amount in redeemAsset
      * @return redeemAssetAmt Gross redeemAsset amount queued before fee deduction
+     * @return netRedeemAssetAmt Net redeemAsset amount after fee deduction
      */
-    function previewRedeem(uint256 _shareAmount) public view returns (uint256 feeAmt, uint256 redeemAssetAmt) {
+    function previewRedeem(
+        uint256 _shareAmount
+    ) public view returns (uint256 feeAmt, uint256 redeemAssetAmt, uint256 netRedeemAssetAmt) {
         uint256 price = getPrice();
         redeemAssetAmt = _trimAsset(
             Math.mulDiv(convertToUnderlying(redeemAsset, _shareAmount), price, 1e18),
             redeemAsset
         );
         feeAmt = txsFee(redeemAssetAmt, TxType.REDEEM);
+        netRedeemAssetAmt = redeemAssetAmt - feeAmt;
     }
 
     /*//////////////////////////////////////////////////////////////

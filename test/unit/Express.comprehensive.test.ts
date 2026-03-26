@@ -329,10 +329,11 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(maintainer).updateRedeemFeeRate(100);
 
         const withdrawAmount = ethers.parseUnits('1000', 18);
-        const [feeAmt, withdrawAssetAmt] = await express.previewRedeem(withdrawAmount);
+        const [feeAmt, redeemAssetAmt, netRedeemAssetAmt] = await express.previewRedeem(withdrawAmount);
 
-        expect(withdrawAssetAmt).to.equal(withdrawAmount);
-        expect(feeAmt).to.equal((withdrawAssetAmt * 100n) / 10000n);
+        expect(redeemAssetAmt).to.equal(withdrawAmount);
+        expect(feeAmt).to.equal((redeemAssetAmt * 100n) / 10000n);
+        expect(netRedeemAssetAmt).to.equal(redeemAssetAmt - feeAmt);
       });
     });
 
