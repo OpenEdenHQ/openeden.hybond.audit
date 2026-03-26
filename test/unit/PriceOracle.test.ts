@@ -153,9 +153,8 @@ describe('PriceOracle', function () {
 
       await priceOracle.connect(operator).proposePrice(ethers.parseUnits('1.005', 18));
 
-      await expect(
-        priceOracle.connect(confirmer).confirmPrice(ethers.parseUnits('1.003', 18))
-      ).to.be.revertedWithCustomError(priceOracle, 'PriceMismatch')
+      await expect(priceOracle.connect(confirmer).confirmPrice(ethers.parseUnits('1.003', 18)))
+        .to.be.revertedWithCustomError(priceOracle, 'PriceMismatch')
         .withArgs(ethers.parseUnits('1.003', 18), ethers.parseUnits('1.005', 18));
     });
 

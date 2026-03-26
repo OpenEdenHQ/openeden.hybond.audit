@@ -30,7 +30,6 @@ import "../interfaces/IPriceFeed.sol";
  * - Integration with asset registry
  * - Upgradeable via UUPS pattern
  */
-
 enum TxType {
     DEPOSIT,
     REDEEM
@@ -1326,23 +1325,36 @@ contract Express is
     //////////////////////////////////////////////////////////////*/
 
     /**
-     * @notice Update epoch and accrue management fees
+     * @notice Update epoch and accrue management fees using on-chain circulating supply
      * @dev Can only be called after timeBuffer has elapsed since last update
-     * @param _circulatingSupply Override circulating supply for fee calculation. If 0, uses on-chain circulatingSupply().
-     *        Must not exceed total token supply when provided.
      */
-    function updateEpoch(uint256 _circulatingSupply) external onlyRole(OPERATOR_ROLE) {
-        if (lastUpdateTS != 0) {
-            if (block.timestamp < lastUpdateTS + timeBuffer) {
-                revert UpdateTooEarly(block.timestamp);
-            }
+    function updateEpoch() external onlyRole(OPERATOR_ROLE) {
+        _updateEpochInternal(0, false);
+    }
+
+    /**
+     * @notice Update epoch with manual circulating supply override
+     * @dev Maintainer-only adjustment path for emergency/correction use
+     * @param _circulatingSupply Circulating supply override used for fee calculation
+     */
+    function updateEpochAdjust(uint256 _circulatingSupply) external onlyRole(MAINTAINER_ROLE) {
+        _updateEpochInternal(_circulatingSupply, true);
+    }
+
+    /**
+     * @notice Shared epoch update logic for default and adjusted paths
+     * @param _circulatingSupply Manual circulating supply value
+     * @param _useOverride Whether to use manual circulating supply
+     */
+    function _updateEpochInternal(uint256 _circulatingSupply, bool _useOverride) internal {
+        if (lastUpdateTS != 0 && block.timestamp < lastUpdateTS + timeBuffer) {
+            revert UpdateTooEarly(block.timestamp);
         }
 
         epoch++;
 
-        // Use override or fall back to on-chain calculation
         uint256 circulating;
-        if (_circulatingSupply > 0) {
+        if (_useOverride) {
             uint256 totalSupply = IERC20(address(token)).totalSupply();
             if (_circulatingSupply > totalSupply) revert InvalidInput(_circulatingSupply);
             circulating = _circulatingSupply;

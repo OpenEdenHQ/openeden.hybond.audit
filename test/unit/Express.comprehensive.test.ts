@@ -960,7 +960,7 @@ describe('Express - Comprehensive Tests', function () {
       await time.increase(timeBuffer);
 
       // Update epoch
-      await expect(express.connect(operator).updateEpoch(0)).to.emit(express, 'UpdateEpoch');
+      await expect(express.connect(operator).updateEpoch()).to.emit(express, 'UpdateEpoch');
 
       const epochAfter = await express.epoch();
       expect(epochAfter).to.equal(epochBefore + 1n);
@@ -974,10 +974,10 @@ describe('Express - Comprehensive Tests', function () {
       const { express, operator } = await loadFixture(deployFixture);
 
       // First update is allowed
-      await express.connect(operator).updateEpoch(0);
+      await express.connect(operator).updateEpoch();
 
       // Second update without waiting should revert
-      await expect(express.connect(operator).updateEpoch(0)).to.be.revertedWithCustomError(
+      await expect(express.connect(operator).updateEpoch()).to.be.revertedWithCustomError(
         express,
         'UpdateTooEarly'
       );
@@ -998,7 +998,7 @@ describe('Express - Comprehensive Tests', function () {
 
       const timeBuffer = await express.timeBuffer();
       await time.increase(timeBuffer);
-      await express.connect(operator).updateEpoch(0);
+      await express.connect(operator).updateEpoch();
 
       const mgtFeeTo = await express.mgtFeeTo();
       const unclaimedFee = await express.unclaimedMgtFee();
@@ -1404,7 +1404,7 @@ describe('Express - Comprehensive Tests', function () {
       await express.connect(maintainer).updateMgtFeeRate(300);
       const timeBuffer = await express.timeBuffer();
       await time.increase(timeBuffer);
-      await express.connect(operator).updateEpoch(0);
+      await express.connect(operator).updateEpoch();
 
       const ratioBefore = await express.sharesPerToken();
 
@@ -1444,7 +1444,7 @@ describe('Express - Comprehensive Tests', function () {
       const circulating = await express.circulatingSupply();
       const timeBuffer = await express.timeBuffer();
       await time.increase(timeBuffer);
-      await express.connect(operator).updateEpoch(0);
+      await express.connect(operator).updateEpoch();
 
       const unclaimedFee = await express.unclaimedMgtFee();
 
@@ -1466,7 +1466,7 @@ describe('Express - Comprehensive Tests', function () {
       // Epoch 1: no withdraw queue
       const timeBuffer = await express.timeBuffer();
       await time.increase(timeBuffer);
-      await express.connect(operator).updateEpoch(0);
+      await express.connect(operator).updateEpoch();
       const fee1 = await express.unclaimedMgtFee();
 
       // Now request withdraw and move to final queue
@@ -1480,7 +1480,7 @@ describe('Express - Comprehensive Tests', function () {
 
       // Epoch 2: with withdraw queue (lower circulating)
       await time.increase(timeBuffer);
-      await express.connect(operator).updateEpoch(0);
+      await express.connect(operator).updateEpoch();
       const totalFee = await express.unclaimedMgtFee();
       const fee2 = totalFee - fee1;
 
@@ -1497,7 +1497,7 @@ describe('Express - Comprehensive Tests', function () {
       // No deposits, so totalSupply = 0 and circulating = 0
       const timeBuffer = await express.timeBuffer();
       await time.increase(timeBuffer);
-      await express.connect(operator).updateEpoch(0);
+      await express.connect(operator).updateEpoch();
 
       expect(await express.unclaimedMgtFee()).to.equal(0);
     });
@@ -1529,7 +1529,7 @@ describe('Express - Comprehensive Tests', function () {
       // updateEpoch fee should be based on this full circulating amount
       const timeBuffer = await express.timeBuffer();
       await time.increase(timeBuffer);
-      await express.connect(operator).updateEpoch(0);
+      await express.connect(operator).updateEpoch();
 
       const unclaimedFee = await express.unclaimedMgtFee();
       const expectedFee = trim((circulating * 300n) / (365n * 10000n), TRIM_DECIMALS);
@@ -1550,7 +1550,7 @@ describe('Express - Comprehensive Tests', function () {
       const overrideSupply = ethers.parseUnits('80000', 18);
       const timeBuffer = await express.timeBuffer();
       await time.increase(timeBuffer);
-      await express.connect(operator).updateEpoch(overrideSupply);
+      await express.connect(maintainer).updateEpochAdjust(overrideSupply);
 
       const unclaimedFee = await express.unclaimedMgtFee();
       const expectedFee = trim((overrideSupply * 300n) / (365n * 10000n), TRIM_DECIMALS);
@@ -1573,10 +1573,9 @@ describe('Express - Comprehensive Tests', function () {
       const timeBuffer = await express.timeBuffer();
       await time.increase(timeBuffer);
 
-      await expect(express.connect(operator).updateEpoch(overSupply)).to.be.revertedWithCustomError(
-        express,
-        'InvalidInput'
-      );
+      await expect(
+        express.connect(maintainer).updateEpochAdjust(overSupply)
+      ).to.be.revertedWithCustomError(express, 'InvalidInput');
     });
 
     it('should allow override equal to total supply', async function () {
@@ -1593,7 +1592,7 @@ describe('Express - Comprehensive Tests', function () {
       const timeBuffer = await express.timeBuffer();
       await time.increase(timeBuffer);
 
-      await expect(express.connect(operator).updateEpoch(totalSupply)).to.emit(
+      await expect(express.connect(maintainer).updateEpochAdjust(totalSupply)).to.emit(
         express,
         'UpdateEpoch'
       );
@@ -1616,14 +1615,14 @@ describe('Express - Comprehensive Tests', function () {
       // Epoch 1: use on-chain circulating supply (pass 0)
       const timeBuffer = await express.timeBuffer();
       await time.increase(timeBuffer);
-      await express.connect(operator).updateEpoch(0);
+      await express.connect(operator).updateEpoch();
       const fee1 = await express.unclaimedMgtFee();
 
       // Epoch 2: use override with half the circulating supply
       const circulating = await express.circulatingSupply();
       const halfCirculating = circulating / 2n;
       await time.increase(timeBuffer);
-      await express.connect(operator).updateEpoch(halfCirculating);
+      await express.connect(maintainer).updateEpochAdjust(halfCirculating);
       const totalFee = await express.unclaimedMgtFee();
       const fee2 = totalFee - fee1;
 
@@ -1793,7 +1792,7 @@ describe('Express - Comprehensive Tests', function () {
 
         const timeBuffer = await express.timeBuffer();
         await time.increase(timeBuffer);
-        await express.connect(operator).updateEpoch(0);
+        await express.connect(operator).updateEpoch();
 
         const fee = await express.unclaimedMgtFee();
         // Last 15 digits should be zero (trimmed to 3 decimals)
@@ -1814,7 +1813,7 @@ describe('Express - Comprehensive Tests', function () {
         // Epoch 1: trimDecimals = 3
         const timeBuffer = await express.timeBuffer();
         await time.increase(timeBuffer);
-        await express.connect(operator).updateEpoch(0);
+        await express.connect(operator).updateEpoch();
         const fee3 = await express.unclaimedMgtFee();
 
         // Change to 6 decimals
@@ -1822,13 +1821,15 @@ describe('Express - Comprehensive Tests', function () {
 
         // Epoch 2: trimDecimals = 6
         await time.increase(timeBuffer);
-        await express.connect(operator).updateEpoch(0);
+        await express.connect(operator).updateEpoch();
         const totalFee = await express.unclaimedMgtFee();
-        const fee6 = totalFee - fee3;
+        const fee6 = BigInt(totalFee) - BigInt(fee3);
 
         // fee with 6 decimals should have more precision (last 12 digits zeroed, not 15)
-        expect(fee3 % 10n ** 15n).to.equal(0);
-        expect(fee6 % 10n ** 12n).to.equal(0);
+        const trim3Factor = 10n ** 15n;
+        const trim6Factor = 10n ** 12n;
+        expect(fee3 % trim3Factor).to.equal(0n);
+        expect(fee6 % trim6Factor).to.equal(0n);
       });
     });
 
