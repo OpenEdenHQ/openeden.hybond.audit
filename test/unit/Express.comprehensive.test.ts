@@ -860,7 +860,7 @@ describe('Express - Comprehensive Tests', function () {
 
         const userBalanceBefore = await oem.balanceOf(user1.address);
 
-        await expect(express.connect(user1).claimEscrow(user1.address))
+        await expect(express.connect(user1).claimRedeemEscrow(user1.address))
           .to.emit(express, 'RedeemEscrowOut')
           .withArgs(user1.address, redeemAmount);
 
@@ -878,7 +878,7 @@ describe('Express - Comprehensive Tests', function () {
 
         const userBalanceBefore = await oem.balanceOf(user1.address);
 
-        await expect(express.connect(operator).claimEscrow(user1.address))
+        await expect(express.connect(operator).claimRedeemEscrow(user1.address))
           .to.emit(express, 'RedeemEscrowOut')
           .withArgs(user1.address, redeemAmount);
 
@@ -893,15 +893,15 @@ describe('Express - Comprehensive Tests', function () {
 
         // user2 (non-operator) tries to claim user1's escrow by passing user1's address
         await expect(
-          express.connect(user2).claimEscrow(user1.address)
+          express.connect(user2).claimRedeemEscrow(user1.address)
         ).to.be.revertedWithCustomError(express, 'InvalidAmount');
       });
 
-      it('should revert claimEscrow when no escrowed balance', async function () {
+      it('should revert claimRedeemEscrow when no escrowed balance', async function () {
         const { express, user1 } = await loadFixture(deployFixture);
 
         await expect(
-          express.connect(user1).claimEscrow(user1.address)
+          express.connect(user1).claimRedeemEscrow(user1.address)
         ).to.be.revertedWithCustomError(express, 'InvalidAmount');
       });
 
@@ -930,7 +930,7 @@ describe('Express - Comprehensive Tests', function () {
         await oem.connect(admin).unbanAddresses([user1.address]);
 
         const balanceBefore = await oem.balanceOf(user1.address);
-        await express.connect(user1).claimEscrow(user1.address);
+        await express.connect(user1).claimRedeemEscrow(user1.address);
         expect(await oem.balanceOf(user1.address)).to.equal(
           balanceBefore + redeemAmount1 + redeemAmount2
         );

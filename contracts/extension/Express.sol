@@ -988,7 +988,7 @@ contract Express is
      * @dev Can be called by the escrowed user directly or by an operator on their behalf
      * @param _account Address to claim escrow for (ignored when caller is not OPERATOR_ROLE, uses msg.sender)
      */
-    function claimEscrow(address _account) external {
+    function claimRedeemEscrow(address _account) external {
         address account = hasRole(OPERATOR_ROLE, msg.sender) ? _account : msg.sender;
         uint256 amount = redeemEscrowBalance[account];
         if (amount == 0) revert InvalidAmount();
