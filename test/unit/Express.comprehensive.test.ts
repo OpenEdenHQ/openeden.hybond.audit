@@ -263,7 +263,7 @@ describe('Express - Comprehensive Tests', function () {
 
         expect(await usdo.balanceOf(user1.address)).to.equal(balanceBefore);
         expect(await express.getDepositQueueLength()).to.equal(0);
-        expect(await express.getDepositUserInfo(user1.address)).to.equal(0);
+        expect(await express.depositInfo(user1.address, await usdo.getAddress())).to.equal(0);
         expect(await usdo.balanceOf(expressAddress)).to.equal(startingLiquidity);
       });
 

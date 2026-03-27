@@ -116,15 +116,15 @@ contract Express is
     mapping(address => bool) public kycList;
 
     // T+0 Deposit queue (before price is known)
-    mapping(address => uint256) private depositInfo;
+    mapping(address => mapping(address => uint256)) public depositInfo;
     DoubleQueueModified.BytesDeque private depositQueue;
 
     // T+0 Pending redeem queue (before price is known)
-    mapping(address => uint256) private pendingRedeemInfo;
+    mapping(address => uint256) public pendingRedeemInfo;
     DoubleQueueModified.BytesDeque private pendingRedeemQueue;
 
     // T+2 Redeem queue (after price is known)
-    mapping(address => uint256) private redeemInfo;
+    mapping(address => uint256) public redeemInfo;
     DoubleQueueModified.BytesDeque private redeemQueue;
 
     // Delay in seconds before pending requests can be processed (default: 2 days)
@@ -506,7 +506,7 @@ contract Express is
         }
         IERC20(_asset).safeTransferFrom(sender, treasury, netAmt);
 
-        depositInfo[_receiver] += netAmt;
+        depositInfo[_receiver][_asset] += netAmt;
 
         bytes32 id = keccak256(abi.encode(_asset, sender, _receiver, netAmt, feeAmt, block.timestamp, _nonce++));
         bytes memory data = abi.encode(_asset, sender, _receiver, netAmt, feeAmt, id);
@@ -604,7 +604,7 @@ contract Express is
             _validateKyc(sender, receiver);
 
             depositQueue.popFront();
-            depositInfo[receiver] -= netAssets;
+            depositInfo[receiver][asset] -= netAssets;
             unchecked {
                 ++count;
             }
@@ -647,7 +647,7 @@ contract Express is
             }
 
             depositQueue.popFront();
-            depositInfo[receiver] -= netAssets;
+            depositInfo[receiver][asset] -= netAssets;
 
             unchecked {
                 --_len;
@@ -686,15 +686,6 @@ contract Express is
         }
         bytes memory data = bytes(depositQueue.at(_index));
         (asset, sender, receiver, netAssets, feeAmt, id) = _decodeDepositData(data);
-    }
-
-    /**
-     * @notice Get user's total queued deposit amount
-     * @param _account User address
-     * @return amount Total asset amount pending mint
-     */
-    function getDepositUserInfo(address _account) external view returns (uint256 amount) {
-        return depositInfo[_account];
     }
 
     /**
@@ -1107,15 +1098,6 @@ contract Express is
     }
 
     /**
-     * @notice Get user's total queued redeem amount
-     * @param _account User address
-     * @return amount Total share amount in queue
-     */
-    function getRedeemUserInfo(address _account) external view returns (uint256 amount) {
-        return redeemInfo[_account];
-    }
-
-    /**
      * @notice Get redeem queue length
      * @return Length of the redeem queue
      */
@@ -1148,15 +1130,6 @@ contract Express is
         }
         bytes memory data = bytes(pendingRedeemQueue.at(_index));
         (sender, receiver, shareAmount, requestTimestamp, id) = _decodePendingRedeemData(data);
-    }
-
-    /**
-     * @notice Get user's total pending redeem amount
-     * @param _account User address
-     * @return amount Total share amount in pending queue
-     */
-    function getPendingRedeemUserInfo(address _account) external view returns (uint256 amount) {
-        return pendingRedeemInfo[_account];
     }
 
     /**
