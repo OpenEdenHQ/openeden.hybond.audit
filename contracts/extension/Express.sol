@@ -640,12 +640,6 @@ contract Express is
                 bytes32 prevId
             ) = _decodeDepositData(data);
 
-            uint256 refundAmt = netAssets + feeAmt;
-            uint256 availableBalance = getTokenBalance(asset);
-            if (availableBalance < refundAmt) {
-                revert InsufficientLiquidity(refundAmt, availableBalance);
-            }
-
             depositQueue.popFront();
             depositInfo[receiver][asset] -= netAssets;
 
@@ -653,10 +647,16 @@ contract Express is
                 --_len;
             }
 
+            uint256 refundAmt = netAssets + feeAmt;
+
             if (token.isBanned(sender)) {
                 depositEscrowBalance[sender][asset] += refundAmt;
                 emit DepositEscrowIn(sender, asset, refundAmt);
             } else {
+                uint256 availableBalance = getTokenBalance(asset);
+                if (availableBalance < refundAmt) {
+                    revert InsufficientLiquidity(refundAmt, availableBalance);
+                }
                 IERC20(asset).safeTransfer(sender, refundAmt);
             }
 
