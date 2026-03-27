@@ -194,7 +194,6 @@ contract Express is
         address indexed from,
         address indexed to,
         uint256 shareAmount,
-        uint256 redeemAssetAmt,
         uint256 priceUsed,
         bytes32 indexed pendingId,
         bytes32 finalId
@@ -847,7 +846,7 @@ contract Express is
         redeemInfo[receiver] += shareAmount;
         totalRedeemQueueShares += shareAmount;
 
-        emit ProcessPendingRedeem(sender, receiver, shareAmount, redeemAssetAmt, currentPrice, pendingId, finalId);
+        emit ProcessPendingRedeem(sender, receiver, shareAmount, currentPrice, pendingId, finalId);
 
         return true;
     }
