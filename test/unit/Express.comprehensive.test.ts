@@ -224,7 +224,7 @@ describe('Express - Comprehensive Tests', function () {
     });
 
     describe('Deposit Cancellation Guardrails', function () {
-      it('should revert cancellation when Express lacks refund liquidity', async function () {
+      it('should always escrow refund on cancelDeposit regardless of liquidity', async function () {
         const { express, usdo, user1, maintainer, operator } = await loadFixture(deployFixture);
 
         const amount = ethers.parseUnits('1000', 18);
@@ -232,15 +232,20 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(operator).offRamp(startingLiquidity);
         await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
 
-        await expect(express.connect(maintainer).cancelDeposit(1)).to.be.revertedWithCustomError(
-          express,
-          'InsufficientLiquidity'
-        );
+        const usdoAddress = await usdo.getAddress();
+        const userBalanceBefore = await usdo.balanceOf(user1.address);
+
+        await expect(express.connect(maintainer).cancelDeposit(1))
+          .to.emit(express, 'DepositEscrowIn')
+          .withArgs(user1.address, usdoAddress, amount);
+
+        expect(await usdo.balanceOf(user1.address)).to.equal(userBalanceBefore);
+        expect(await express.depositEscrowBalance(user1.address, usdoAddress)).to.equal(amount);
+        expect(await express.getDepositQueueLength()).to.equal(0);
       });
 
-      it('should refund on-chain after funds are returned to Express', async function () {
-        const { express, usdo, user1, maintainer, treasury, feeTo } =
-          await loadFixture(deployFixture);
+      it('should escrow refund with fees on cancelDeposit', async function () {
+        const { express, usdo, user1, maintainer } = await loadFixture(deployFixture);
 
         const expressAddress = await express.getAddress();
         await express.connect(maintainer).updateDepositFeeRate(100);
@@ -248,35 +253,26 @@ describe('Express - Comprehensive Tests', function () {
         const amount = ethers.parseUnits('1000', 18);
         const feeAmt = (amount * 100n) / 10000n;
         const netAmt = amount - feeAmt;
-        const startingLiquidity = await usdo.balanceOf(expressAddress);
-        const balanceBefore = await usdo.balanceOf(user1.address);
 
-        await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
+        const userBalanceBefore = await usdo.balanceOf(user1.address);
+        const usdoAddress = await usdo.getAddress();
 
-        await usdo.connect(treasury).transfer(expressAddress, netAmt);
-        await usdo.connect(feeTo).transfer(expressAddress, feeAmt);
+        await express.connect(user1).requestDeposit(usdoAddress, amount, user1.address);
 
-        await expect(express.connect(maintainer).cancelDeposit(1)).to.emit(
-          express,
-          'CancelProcessDeposit'
-        );
+        await expect(express.connect(maintainer).cancelDeposit(1))
+          .to.emit(express, 'DepositEscrowIn')
+          .withArgs(user1.address, usdoAddress, amount);
 
-        expect(await usdo.balanceOf(user1.address)).to.equal(balanceBefore);
+        expect(await express.depositEscrowBalance(user1.address, usdoAddress)).to.equal(amount);
         expect(await express.getDepositQueueLength()).to.equal(0);
-        expect(await express.depositInfo(user1.address, await usdo.getAddress())).to.equal(0);
-        expect(await usdo.balanceOf(expressAddress)).to.equal(startingLiquidity);
+        expect(await express.depositInfo(user1.address, usdoAddress)).to.equal(0);
       });
 
-      it('should escrow deposit assets when cancelling deposit for banned user', async function () {
-        const { express, usdo, oem, user1, maintainer, admin } = await loadFixture(deployFixture);
+      it('should escrow deposit assets when cancelling deposit for any user', async function () {
+        const { express, usdo, user1, maintainer } = await loadFixture(deployFixture);
 
         const amount = ethers.parseUnits('1000', 18);
         await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
-
-        // Ban user1
-        const BANLIST_ROLE = await oem.BANLIST_ROLE();
-        await oem.connect(admin).grantRole(BANLIST_ROLE, admin.address);
-        await oem.connect(admin).banAddresses([user1.address]);
 
         const userBalanceBefore = await usdo.balanceOf(user1.address);
         const usdoAddress = await usdo.getAddress();
@@ -285,28 +281,17 @@ describe('Express - Comprehensive Tests', function () {
           .to.emit(express, 'DepositEscrowIn')
           .withArgs(user1.address, usdoAddress, amount);
 
-        // User balance unchanged (assets escrowed, not transferred)
         expect(await usdo.balanceOf(user1.address)).to.equal(userBalanceBefore);
-
-        // Escrow balance recorded
         expect(await express.depositEscrowBalance(user1.address, usdoAddress)).to.equal(amount);
-
-        // Queue should be empty
         expect(await express.getDepositQueueLength()).to.equal(0);
       });
 
-      it('should allow user to claim deposit escrow after unban', async function () {
-        const { express, usdo, oem, user1, maintainer, admin } = await loadFixture(deployFixture);
+      it('should allow user to claim deposit escrow', async function () {
+        const { express, usdo, user1, maintainer } = await loadFixture(deployFixture);
 
         const amount = ethers.parseUnits('1000', 18);
         await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
-
-        // Ban, cancel, then unban
-        const BANLIST_ROLE = await oem.BANLIST_ROLE();
-        await oem.connect(admin).grantRole(BANLIST_ROLE, admin.address);
-        await oem.connect(admin).banAddresses([user1.address]);
         await express.connect(maintainer).cancelDeposit(1);
-        await oem.connect(admin).unbanAddresses([user1.address]);
 
         const usdoAddress = await usdo.getAddress();
         const userBalanceBefore = await usdo.balanceOf(user1.address);
@@ -320,18 +305,11 @@ describe('Express - Comprehensive Tests', function () {
       });
 
       it('should allow operator to claim deposit escrow on behalf of user', async function () {
-        const { express, usdo, oem, user1, maintainer, admin, operator } =
-          await loadFixture(deployFixture);
+        const { express, usdo, user1, maintainer, operator } = await loadFixture(deployFixture);
 
         const amount = ethers.parseUnits('1000', 18);
         await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
-
-        // Ban, cancel, then unban
-        const BANLIST_ROLE = await oem.BANLIST_ROLE();
-        await oem.connect(admin).grantRole(BANLIST_ROLE, admin.address);
-        await oem.connect(admin).banAddresses([user1.address]);
         await express.connect(maintainer).cancelDeposit(1);
-        await oem.connect(admin).unbanAddresses([user1.address]);
 
         const usdoAddress = await usdo.getAddress();
         const userBalanceBefore = await usdo.balanceOf(user1.address);
@@ -340,7 +318,6 @@ describe('Express - Comprehensive Tests', function () {
           .to.emit(express, 'DepositEscrowOut')
           .withArgs(user1.address, usdoAddress, amount);
 
-        // Tokens go to user1, not operator
         expect(await usdo.balanceOf(user1.address)).to.equal(userBalanceBefore + amount);
         expect(await express.depositEscrowBalance(user1.address, usdoAddress)).to.equal(0);
       });
@@ -354,16 +331,10 @@ describe('Express - Comprehensive Tests', function () {
       });
 
       it('should ignore _account param for non-operator callers on claimDepositEscrow', async function () {
-        const { express, usdo, oem, user1, user2, maintainer, admin } =
-          await loadFixture(deployFixture);
+        const { express, usdo, user1, user2, maintainer } = await loadFixture(deployFixture);
 
         const amount = ethers.parseUnits('1000', 18);
         await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
-
-        // Ban user1 and cancel
-        const BANLIST_ROLE = await oem.BANLIST_ROLE();
-        await oem.connect(admin).grantRole(BANLIST_ROLE, admin.address);
-        await oem.connect(admin).banAddresses([user1.address]);
         await express.connect(maintainer).cancelDeposit(1);
 
         // user2 (non-operator) tries to claim user1's deposit escrow

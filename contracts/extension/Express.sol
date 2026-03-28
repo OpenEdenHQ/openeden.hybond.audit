@@ -142,7 +142,7 @@ contract Express is
     // Escrowed token balances for banned users whose cancel redeem refunds could not be transferred directly
     mapping(address => uint256) public redeemEscrowBalance;
 
-    // Escrowed deposit asset balances for banned users whose cancel deposit refunds could not be transferred directly
+    // Escrowed deposit asset balances credited on cancelDeposit; claimable via claimDepositEscrow()
     // user => asset => amount
     mapping(address => mapping(address => uint256)) public depositEscrowBalance;
 
@@ -619,10 +619,9 @@ contract Express is
     }
 
     /**
-     * @notice Cancel queued deposit requests and refund once funds have been returned to this contract
-     * @dev Reverts unless Express holds enough of the deposit asset to complete the refund on-chain.
-     *      Operations must reserve liquidity for redeem requests first and only use surplus balance
-     *      for deposit cancellation refunds.
+     * @notice Cancel queued deposit requests and credit refunds to deposit escrow
+     * @dev Refund amounts (net + fee) are added to depositEscrowBalance for the sender to claim later
+     *      via claimDepositEscrow().
      * @param _len Number of requests to cancel (0 = cancel all)
      */
     function cancelDeposit(uint256 _len) external onlyRole(MAINTAINER_ROLE) {
@@ -647,17 +646,8 @@ contract Express is
             }
 
             uint256 refundAmt = netAssets + feeAmt;
-
-            if (token.isBanned(sender)) {
-                depositEscrowBalance[sender][asset] += refundAmt;
-                emit DepositEscrowIn(sender, asset, refundAmt);
-            } else {
-                uint256 availableBalance = getTokenBalance(asset);
-                if (availableBalance < refundAmt) {
-                    revert InsufficientLiquidity(refundAmt, availableBalance);
-                }
-                IERC20(asset).safeTransfer(sender, refundAmt);
-            }
+            depositEscrowBalance[sender][asset] += refundAmt;
+            emit DepositEscrowIn(sender, asset, refundAmt);
 
             emit CancelProcessDeposit(asset, sender, receiver, netAssets, feeAmt, prevId);
         }
