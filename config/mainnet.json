@@ -8,29 +8,29 @@
     "issueCap": "10000000"
   },
   "AssetRegistry": {
-    "usdcAsset": "0x0000000000000000000000000000000000000000",
+    "usdcAsset": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
     "usdcPriceFeed": "0x0000000000000000000000000000000000000000",
     "usdcSupported": true,
     "usdcMaxStalePeriod": 0
   },
   "PriceOracle": {
     "decimals": 8,
-    "relativeMaxDeviation": 500,
-    "absoluteMaxDeviation": 1000,
+    "relativeMaxDeviation": 100,
+    "absoluteMaxDeviation": 2000,
     "initPrice": "1",
     "referencePrice": "1",
-    "operator": "0x0000000000000000000000000000000000000000"
+    "operator": "0xb80C0d24860988f67752C2C3FFcaf47df1F3B9D7"
   },
   "Express": {
-    "usdcAddress": "0x0000000000000000000000000000000000000000",
+    "usdcAddress": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
     "hybondTokenAddress": "0x0000000000000000000000000000000000000000",
     "assetRegistryAddress": "0x0000000000000000000000000000000000000000",
     "treasury": "0x0000000000000000000000000000000000000000",
     "txFeeTo": "0x0000000000000000000000000000000000000000",
     "mgtFeeTo": "0x0000000000000000000000000000000000000000",
-    "depositMinimum": "10",
-    "redeemMinimum": "5",
-    "firstDepositAmount": "20",
+    "depositMinimum": "1",
+    "redeemMinimum": "1",
+    "firstDepositAmount": "2",
     "priceOracle": "0x0000000000000000000000000000000000000000"
   }
 }

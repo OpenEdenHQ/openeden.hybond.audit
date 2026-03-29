@@ -535,12 +535,12 @@ contract Express is
         emit AddToDepositQueue(_asset, sender, _receiver, netAmt, feeAmt, id);
     }
 
-    /**
-     * @notice Not supported. Use requestDeposit instead.
-     */
-    function requestMint(address, uint256, address) external pure {
-        revert UseRequestDeposit();
-    }
+    // /**
+    //  * @notice Not supported. Use requestDeposit instead.
+    //  */
+    // function requestMint(address, uint256, address) external pure {
+    //     revert UseRequestDeposit();
+    // }
 
     /**
      * @notice Preview deposit request accounting
@@ -749,12 +749,12 @@ contract Express is
         emit AddToPendingRedeemQueue(from, _to, _shareAmount, id);
     }
 
-    /**
-     * @notice Not supported. Use requestRedeem instead.
-     */
-    function requestWithdraw(address, uint256) external pure {
-        revert UseRequestRedeem();
-    }
+    // /**
+    //  * @notice Not supported. Use requestRedeem instead.
+    //  */
+    // function requestWithdraw(address, uint256) external pure {
+    //     revert UseRequestRedeem();
+    // }
 
     /**
      * @notice Preview redeem request accounting
@@ -1150,28 +1150,28 @@ contract Express is
         return pendingRedeemQueue.length();
     }
 
-    /**
-     * @notice Check if pending redeem at index is ready for processing
-     * @param _index Queue index to check
-     * @return ready True if ready to process
-     * @return timeRemaining Seconds remaining until ready (0 if already ready)
-     */
-    function isPendingRedeemReady(uint256 _index) external view returns (bool ready, uint256 timeRemaining) {
-        if (pendingRedeemQueue.empty() || _index > pendingRedeemQueue.length() - 1) {
-            return (false, 0);
-        }
+    // /**
+    //  * @notice Check if pending redeem at index is ready for processing
+    //  * @param _index Queue index to check
+    //  * @return ready True if ready to process
+    //  * @return timeRemaining Seconds remaining until ready (0 if already ready)
+    //  */
+    // function isPendingRedeemReady(uint256 _index) external view returns (bool ready, uint256 timeRemaining) {
+    //     if (pendingRedeemQueue.empty() || _index > pendingRedeemQueue.length() - 1) {
+    //         return (false, 0);
+    //     }
 
-        bytes memory data = bytes(pendingRedeemQueue.at(_index));
-        (, , , uint256 requestTimestamp, ) = _decodePendingRedeemData(data);
+    //     bytes memory data = bytes(pendingRedeemQueue.at(_index));
+    //     (, , , uint256 requestTimestamp, ) = _decodePendingRedeemData(data);
 
-        uint256 readyTime = requestTimestamp + convertRedeemRequestsDelay;
+    //     uint256 readyTime = requestTimestamp + convertRedeemRequestsDelay;
 
-        if (block.timestamp >= readyTime) {
-            return (true, 0);
-        } else {
-            return (false, readyTime - block.timestamp);
-        }
-    }
+    //     if (block.timestamp >= readyTime) {
+    //         return (true, 0);
+    //     } else {
+    //         return (false, readyTime - block.timestamp);
+    //     }
+    // }
 
     /*//////////////////////////////////////////////////////////////
                            KYC MANAGEMENT

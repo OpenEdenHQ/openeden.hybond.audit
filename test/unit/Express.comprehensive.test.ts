@@ -1604,26 +1604,6 @@ describe('Express - Comprehensive Tests', function () {
     });
   });
 
-  describe('Unsupported Methods', function () {
-    it('should revert requestMint with UseRequestDeposit', async function () {
-      const { express, user1, usdo } = await loadFixture(deployFixture);
-
-      await expect(
-        express
-          .connect(user1)
-          .requestMint(await usdo.getAddress(), ethers.parseUnits('1000', 18), user1.address)
-      ).to.be.revertedWithCustomError(express, 'UseRequestDeposit');
-    });
-
-    it('should revert requestWithdraw with UseRequestRedeem', async function () {
-      const { express, user1 } = await loadFixture(deployFixture);
-
-      await expect(
-        express.connect(user1).requestWithdraw(user1.address, ethers.parseUnits('1000', 18))
-      ).to.be.revertedWithCustomError(express, 'UseRequestRedeem');
-    });
-  });
-
   describe('Edge Cases', function () {
     it('should handle empty queue processing gracefully', async function () {
       const { express, maintainer } = await loadFixture(deployFixture);
