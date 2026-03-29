@@ -164,6 +164,7 @@ contract Express is
     event UpdateMaxStalePeriod(uint256 maxStalePeriod);
     event UpdateConvertRedeemRequestsDelay(uint256 delay);
     event UpdateTrimDecimals(uint8 decimals);
+    event UpdateRedeemAsset(address indexed oldAsset, address indexed newAsset);
 
     // Event for adding a deposit request to the queue
     event AddToDepositQueue(
@@ -276,6 +277,7 @@ contract Express is
     error NoPendingRedeemsReady();
     error UseRequestDeposit();
     error UseRequestRedeem();
+    error QueuesNotEmpty();
 
     /*//////////////////////////////////////////////////////////////
                               CONSTRUCTOR
@@ -410,6 +412,25 @@ contract Express is
         if (_address == address(0)) revert InvalidAddress();
         mgtFeeTo = _address;
         emit UpdateMgtFeeTo(_address);
+    }
+
+    /**
+     * @notice Update the redeem asset address
+     * @dev Requires all queues (deposit, pendingRedeem, redeem) to be empty to prevent
+     *      in-flight requests from being settled in the wrong asset.
+     *      Claim escrow mappings (redeemEscrowBalance, depositEscrowBalance) are unaffected
+     *      because redeemEscrowBalance holds HYBOND tokens (not redeemAsset) and
+     *      depositEscrowBalance is keyed by the original deposit asset.
+     * @param _address The new redeem asset address
+     */
+    function updateRedeemAsset(address _address) external onlyRole(MAINTAINER_ROLE) {
+        if (_address == address(0)) revert InvalidAddress();
+        if (depositQueue.length() != 0 || pendingRedeemQueue.length() != 0 || redeemQueue.length() != 0) {
+            revert QueuesNotEmpty();
+        }
+        address oldAsset = redeemAsset;
+        redeemAsset = _address;
+        emit UpdateRedeemAsset(oldAsset, _address);
     }
 
     /*//////////////////////////////////////////////////////////////

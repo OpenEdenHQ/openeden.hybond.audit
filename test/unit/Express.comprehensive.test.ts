@@ -1861,6 +1861,234 @@ describe('Express - Comprehensive Tests', function () {
       });
     });
 
+    describe('updateRedeemAsset', function () {
+      it('should allow maintainer to update redeemAsset when all queues are empty', async function () {
+        const { express, usdo, maintainer } = await loadFixture(deployFixture);
+
+        const MockERC20Factory = await ethers.getContractFactory('MockERC20');
+        const newAsset = await MockERC20Factory.deploy('New Asset', 'NEW', 18);
+        await newAsset.waitForDeployment();
+
+        const oldAsset = await express.redeemAsset();
+        expect(oldAsset).to.equal(await usdo.getAddress());
+
+        await expect(express.connect(maintainer).updateRedeemAsset(await newAsset.getAddress()))
+          .to.emit(express, 'UpdateRedeemAsset')
+          .withArgs(oldAsset, await newAsset.getAddress());
+
+        expect(await express.redeemAsset()).to.equal(await newAsset.getAddress());
+      });
+
+      it('should revert when called by non-maintainer', async function () {
+        const { express, usdo, user1 } = await loadFixture(deployFixture);
+
+        await expect(
+          express.connect(user1).updateRedeemAsset(await usdo.getAddress())
+        ).to.be.revertedWithCustomError(express, 'AccessControlUnauthorizedAccount');
+      });
+
+      it('should revert when address is zero', async function () {
+        const { express, maintainer } = await loadFixture(deployFixture);
+
+        await expect(
+          express.connect(maintainer).updateRedeemAsset(ethers.ZeroAddress)
+        ).to.be.revertedWithCustomError(express, 'InvalidAddress');
+      });
+
+      it('should revert when deposit queue is not empty', async function () {
+        const { express, usdo, user1, maintainer } = await loadFixture(deployFixture);
+
+        const MockERC20Factory = await ethers.getContractFactory('MockERC20');
+        const newAsset = await MockERC20Factory.deploy('New Asset', 'NEW', 18);
+
+        // Add a deposit request to make the queue non-empty
+        const firstDepositMin = await express.firstDepositAmount();
+        await express
+          .connect(user1)
+          .requestDeposit(await usdo.getAddress(), firstDepositMin, user1.address);
+
+        expect(await express.getDepositQueueLength()).to.be.gt(0);
+
+        await expect(
+          express.connect(maintainer).updateRedeemAsset(await newAsset.getAddress())
+        ).to.be.revertedWithCustomError(express, 'QueuesNotEmpty');
+      });
+
+      it('should revert when pending redeem queue is not empty', async function () {
+        const { express, oem, usdo, user1, maintainer } = await loadFixture(deployFixture);
+
+        const MockERC20Factory = await ethers.getContractFactory('MockERC20');
+        const newAsset = await MockERC20Factory.deploy('New Asset', 'NEW', 18);
+
+        // Deposit first to get tokens
+        const depositAmount = ethers.parseUnits('5000', 18);
+        await express
+          .connect(user1)
+          .requestDeposit(await usdo.getAddress(), depositAmount, user1.address);
+        await express.connect(maintainer).processDepositQueue(1);
+
+        // Request redeem to populate pendingRedeemQueue
+        const redeemAmount = await express.redeemMinimum();
+        await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
+        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+
+        expect(await express.getPendingRedeemQueueLength()).to.be.gt(0);
+
+        await expect(
+          express.connect(maintainer).updateRedeemAsset(await newAsset.getAddress())
+        ).to.be.revertedWithCustomError(express, 'QueuesNotEmpty');
+      });
+
+      it('should revert when redeem queue is not empty', async function () {
+        const { express, oem, usdo, user1, maintainer, operator } =
+          await loadFixture(deployFixture);
+
+        const MockERC20Factory = await ethers.getContractFactory('MockERC20');
+        const newAsset = await MockERC20Factory.deploy('New Asset', 'NEW', 18);
+
+        // Deposit first to get tokens
+        const depositAmount = ethers.parseUnits('5000', 18);
+        await express
+          .connect(user1)
+          .requestDeposit(await usdo.getAddress(), depositAmount, user1.address);
+        await express.connect(maintainer).processDepositQueue(1);
+
+        // Request redeem and advance to final redeem queue
+        const redeemAmount = await express.redeemMinimum();
+        await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
+        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+
+        // Advance time past T+2 delay to allow processing pending redeems
+        const delay = await express.convertRedeemRequestsDelay();
+        await time.increase(delay + 1n);
+
+        // Process pending redeems into final redeem queue
+        await express.connect(operator).processPendingRedeems(1);
+
+        expect(await express.getRedeemQueueLength()).to.be.gt(0);
+
+        await expect(
+          express.connect(maintainer).updateRedeemAsset(await newAsset.getAddress())
+        ).to.be.revertedWithCustomError(express, 'QueuesNotEmpty');
+      });
+
+      it('should succeed after all queues are drained', async function () {
+        const { express, oem, usdo, user1, maintainer, operator } =
+          await loadFixture(deployFixture);
+
+        const MockERC20Factory = await ethers.getContractFactory('MockERC20');
+        const newAsset = await MockERC20Factory.deploy('New Asset', 'NEW', 18);
+
+        // Deposit, process, redeem, process all queues to drain them
+        const depositAmount = ethers.parseUnits('5000', 18);
+        await express
+          .connect(user1)
+          .requestDeposit(await usdo.getAddress(), depositAmount, user1.address);
+        await express.connect(maintainer).processDepositQueue(1);
+
+        const redeemAmount = await express.redeemMinimum();
+        await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
+        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+
+        const delay = await express.convertRedeemRequestsDelay();
+        await time.increase(delay + 1n);
+        await express.connect(operator).processPendingRedeems(1);
+        await express.connect(operator).processRedeemQueue(1);
+
+        // All queues should now be empty
+        expect(await express.getDepositQueueLength()).to.equal(0);
+        expect(await express.getPendingRedeemQueueLength()).to.equal(0);
+        expect(await express.getRedeemQueueLength()).to.equal(0);
+
+        // Now updateRedeemAsset should succeed
+        await expect(
+          express.connect(maintainer).updateRedeemAsset(await newAsset.getAddress())
+        ).to.emit(express, 'UpdateRedeemAsset');
+
+        expect(await express.redeemAsset()).to.equal(await newAsset.getAddress());
+      });
+
+      it('should not affect redeemEscrowBalance after changing redeemAsset', async function () {
+        const { express, oem, usdo, user1, maintainer, operator, admin } =
+          await loadFixture(deployFixture);
+
+        // Deposit to get tokens
+        const depositAmount = ethers.parseUnits('5000', 18);
+        await express
+          .connect(user1)
+          .requestDeposit(await usdo.getAddress(), depositAmount, user1.address);
+        await express.connect(maintainer).processDepositQueue(1);
+
+        // Request redeem
+        const redeemAmount = await express.redeemMinimum();
+        await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
+        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+
+        // Ban user1 before cancelling so refund goes to escrow
+        const BANLIST_ROLE = await oem.BANLIST_ROLE();
+        await oem.connect(admin).grantRole(BANLIST_ROLE, admin.address);
+        await oem.connect(admin).banAddresses([user1.address]);
+
+        // Cancel redeem — refund should go to escrow since user1 is banned
+        const delay = await express.convertRedeemRequestsDelay();
+        await time.increase(delay + 1n);
+        await express.connect(operator).processPendingRedeems(1);
+        await express.connect(maintainer).cancelRedeem(1);
+
+        const escrowBalance = await express.redeemEscrowBalance(user1.address);
+        expect(escrowBalance).to.be.gt(0);
+
+        // Now change redeemAsset
+        const MockERC20Factory = await ethers.getContractFactory('MockERC20');
+        const newAsset = await MockERC20Factory.deploy('New Asset', 'NEW', 18);
+        await express.connect(maintainer).updateRedeemAsset(await newAsset.getAddress());
+
+        // Escrow balance should be unchanged (it's in HYBOND tokens, not redeemAsset)
+        expect(await express.redeemEscrowBalance(user1.address)).to.equal(escrowBalance);
+
+        // Unban and claim — should still work since escrow is in HYBOND tokens
+        await oem.connect(admin).unbanAddresses([user1.address]);
+        await express.connect(user1).claimRedeemEscrow(user1.address);
+        expect(await express.redeemEscrowBalance(user1.address)).to.equal(0);
+        expect(await oem.balanceOf(user1.address)).to.be.gt(0);
+      });
+
+      it('should not affect depositEscrowBalance after changing redeemAsset', async function () {
+        const { express, oem, usdo, user1, maintainer, admin } = await loadFixture(deployFixture);
+
+        // Deposit request
+        const firstDepositMin = await express.firstDepositAmount();
+        await express
+          .connect(user1)
+          .requestDeposit(await usdo.getAddress(), firstDepositMin, user1.address);
+
+        // Ban user1 before cancelling so refund goes to deposit escrow
+        const BANLIST_ROLE = await oem.BANLIST_ROLE();
+        await oem.connect(admin).grantRole(BANLIST_ROLE, admin.address);
+        await oem.connect(admin).banAddresses([user1.address]);
+
+        // Cancel deposit — refund should go to deposit escrow
+        await express.connect(maintainer).cancelDeposit(1);
+
+        const usdoAddr = await usdo.getAddress();
+        const depositEscrow = await express.depositEscrowBalance(user1.address, usdoAddr);
+        expect(depositEscrow).to.be.gt(0);
+
+        // Change redeemAsset
+        const MockERC20Factory = await ethers.getContractFactory('MockERC20');
+        const newAsset = await MockERC20Factory.deploy('New Asset', 'NEW', 18);
+        await express.connect(maintainer).updateRedeemAsset(await newAsset.getAddress());
+
+        // Deposit escrow balance should be unchanged (keyed by original deposit asset)
+        expect(await express.depositEscrowBalance(user1.address, usdoAddr)).to.equal(depositEscrow);
+
+        // Unban and claim
+        await oem.connect(admin).unbanAddresses([user1.address]);
+        await express.connect(user1).claimDepositEscrow(user1.address, usdoAddr);
+        expect(await express.depositEscrowBalance(user1.address, usdoAddr)).to.equal(0);
+      });
+    });
+
     describe('changing trimDecimals mid-operation', function () {
       it('should apply new trimDecimals to subsequent operations', async function () {
         const { express, oem, user1, user2, usdo, maintainer, operator } =
