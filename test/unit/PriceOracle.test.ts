@@ -3,14 +3,21 @@ import { ethers, upgrades } from 'hardhat';
 import { loadFixture, time } from '@nomicfoundation/hardhat-network-helpers';
 
 describe('PriceOracle', function () {
+  const ORACLE_DECIMALS = 18;
+
   async function deployFixture() {
     const [admin, operator, confirmer, user] = await ethers.getSigners();
 
     const PriceOracleFactory = await ethers.getContractFactory('PriceOracle');
     const priceOracle = await upgrades.deployProxy(
       PriceOracleFactory,
-      [18, 100, 100, ethers.parseUnits('1', 18), ethers.parseUnits('1', 18), admin.address],
-      { kind: 'uups', initializer: 'initialize' }
+      [100, 100, ethers.parseUnits('1', ORACLE_DECIMALS), ethers.parseUnits('1', ORACLE_DECIMALS), admin.address],
+      {
+        kind: 'uups',
+        initializer: 'initialize',
+        constructorArgs: [ORACLE_DECIMALS],
+        unsafeAllow: ['state-variable-immutable'],
+      }
     );
     await priceOracle.waitForDeployment();
 
@@ -50,12 +57,17 @@ describe('PriceOracle', function () {
       const [roundId, answer, , , answeredInRound] = await priceOracle.latestRoundData();
 
       expect(roundId).to.equal(1);
-      expect(answer).to.equal(ethers.parseUnits('1', 18));
+      expect(answer).to.equal(ethers.parseUnits('1', ORACLE_DECIMALS));
       expect(answeredInRound).to.equal(1);
-      expect(await priceOracle.referencePrice()).to.equal(ethers.parseUnits('1', 18));
+      expect(await priceOracle.referencePrice()).to.equal(ethers.parseUnits('1', ORACLE_DECIMALS));
       expect(await priceOracle.relativeMaxDeviation()).to.equal(100);
       expect(await priceOracle.absoluteMaxDeviation()).to.equal(100);
       expect(await priceOracle.PENDING_PRICE_TTL()).to.equal(24 * 60 * 60);
+    });
+
+    it('should set decimals as immutable via constructor', async function () {
+      const { priceOracle } = await loadFixture(deployFixture);
+      expect(await priceOracle.decimals()).to.equal(ORACLE_DECIMALS);
     });
   });
 
@@ -64,29 +76,29 @@ describe('PriceOracle', function () {
       const { priceOracle, user } = await loadFixture(deployFixture);
 
       await expect(
-        priceOracle.connect(user).proposePrice(ethers.parseUnits('1.005', 18))
+        priceOracle.connect(user).proposePrice(ethers.parseUnits('1.005', ORACLE_DECIMALS))
       ).to.be.revertedWithCustomError(priceOracle, 'AccessControlUnauthorizedAccount');
     });
 
     it('should keep the old price active until confirmation', async function () {
       const { priceOracle, operator, confirmer } = await loadFixture(deployFixture);
 
-      await expect(priceOracle.connect(operator).proposePrice(ethers.parseUnits('1.005', 18)))
+      await expect(priceOracle.connect(operator).proposePrice(ethers.parseUnits('1.005', ORACLE_DECIMALS)))
         .to.emit(priceOracle, 'PriceProposed')
-        .withArgs(ethers.parseUnits('1', 18), ethers.parseUnits('1.005', 18), operator.address);
+        .withArgs(ethers.parseUnits('1', ORACLE_DECIMALS), ethers.parseUnits('1.005', ORACLE_DECIMALS), operator.address);
 
-      expect(await priceOracle.latestAnswer()).to.equal(ethers.parseUnits('1', 18));
+      expect(await priceOracle.latestAnswer()).to.equal(ethers.parseUnits('1', ORACLE_DECIMALS));
 
       const [pendingPrice, , proposer, exists] = await priceOracle.pendingPrice();
-      expect(pendingPrice).to.equal(ethers.parseUnits('1.005', 18));
+      expect(pendingPrice).to.equal(ethers.parseUnits('1.005', ORACLE_DECIMALS));
       expect(proposer).to.equal(operator.address);
       expect(exists).to.equal(true);
 
-      await expect(priceOracle.connect(confirmer).confirmPrice(ethers.parseUnits('1.005', 18)))
+      await expect(priceOracle.connect(confirmer).confirmPrice(ethers.parseUnits('1.005', ORACLE_DECIMALS)))
         .to.emit(priceOracle, 'UpdatePrice')
-        .withArgs(ethers.parseUnits('1', 18), ethers.parseUnits('1.005', 18));
+        .withArgs(ethers.parseUnits('1', ORACLE_DECIMALS), ethers.parseUnits('1.005', ORACLE_DECIMALS));
 
-      expect(await priceOracle.latestAnswer()).to.equal(ethers.parseUnits('1.005', 18));
+      expect(await priceOracle.latestAnswer()).to.equal(ethers.parseUnits('1.005', ORACLE_DECIMALS));
       expect((await priceOracle.pendingPrice())[3]).to.equal(false);
     });
 
@@ -94,7 +106,7 @@ describe('PriceOracle', function () {
       const { priceOracle, operator } = await loadFixture(deployFixture);
 
       await expect(
-        priceOracle.connect(operator).proposePrice(ethers.parseUnits('1.02', 18))
+        priceOracle.connect(operator).proposePrice(ethers.parseUnits('1.02', ORACLE_DECIMALS))
       ).to.be.revertedWithCustomError(priceOracle, 'RelativeDeviationTooLarge');
     });
 
@@ -104,7 +116,7 @@ describe('PriceOracle', function () {
       await priceOracle.connect(admin).updateRelativeMaxDeviation(1000);
 
       await expect(
-        priceOracle.connect(operator).proposePrice(ethers.parseUnits('1.05', 18))
+        priceOracle.connect(operator).proposePrice(ethers.parseUnits('1.05', ORACLE_DECIMALS))
       ).to.be.revertedWithCustomError(priceOracle, 'AbsoluteDeviationTooLarge');
     });
 
@@ -113,21 +125,21 @@ describe('PriceOracle', function () {
 
       await priceOracle.connect(admin).updateRelativeMaxDeviation(1000);
       await priceOracle.connect(admin).updateAbsoluteMaxDeviation(1000);
-      await priceOracle.connect(admin).updateReferencePrice(ethers.parseUnits('1.05', 18));
+      await priceOracle.connect(admin).updateReferencePrice(ethers.parseUnits('1.05', ORACLE_DECIMALS));
 
-      await expect(priceOracle.connect(operator).proposePrice(ethers.parseUnits('1.05', 18)))
+      await expect(priceOracle.connect(operator).proposePrice(ethers.parseUnits('1.05', ORACLE_DECIMALS)))
         .to.emit(priceOracle, 'PriceProposed')
-        .withArgs(ethers.parseUnits('1', 18), ethers.parseUnits('1.05', 18), operator.address);
+        .withArgs(ethers.parseUnits('1', ORACLE_DECIMALS), ethers.parseUnits('1.05', ORACLE_DECIMALS), operator.address);
     });
 
     it('should allow the operator to cancel a pending price', async function () {
       const { priceOracle, operator } = await loadFixture(deployFixture);
 
-      await priceOracle.connect(operator).proposePrice(ethers.parseUnits('1.005', 18));
+      await priceOracle.connect(operator).proposePrice(ethers.parseUnits('1.005', ORACLE_DECIMALS));
 
       await expect(priceOracle.connect(operator).cancelPendingPrice())
         .to.emit(priceOracle, 'PendingPriceCancelled')
-        .withArgs(ethers.parseUnits('1.005', 18), operator.address);
+        .withArgs(ethers.parseUnits('1.005', ORACLE_DECIMALS), operator.address);
 
       expect((await priceOracle.pendingPrice())[3]).to.equal(false);
     });
@@ -135,7 +147,7 @@ describe('PriceOracle', function () {
     it('should block guardrail config changes while a pending price exists', async function () {
       const { priceOracle, admin, operator } = await loadFixture(deployFixture);
 
-      await priceOracle.connect(operator).proposePrice(ethers.parseUnits('1.005', 18));
+      await priceOracle.connect(operator).proposePrice(ethers.parseUnits('1.005', ORACLE_DECIMALS));
 
       await expect(
         priceOracle.connect(admin).updateRelativeMaxDeviation(200)
@@ -144,34 +156,82 @@ describe('PriceOracle', function () {
         priceOracle.connect(admin).updateAbsoluteMaxDeviation(200)
       ).to.be.revertedWithCustomError(priceOracle, 'PendingPriceExists');
       await expect(
-        priceOracle.connect(admin).updateReferencePrice(ethers.parseUnits('1.01', 18))
+        priceOracle.connect(admin).updateReferencePrice(ethers.parseUnits('1.01', ORACLE_DECIMALS))
       ).to.be.revertedWithCustomError(priceOracle, 'PendingPriceExists');
     });
 
     it('should revert when confirmed price does not match pending price', async function () {
       const { priceOracle, operator, confirmer } = await loadFixture(deployFixture);
 
-      await priceOracle.connect(operator).proposePrice(ethers.parseUnits('1.005', 18));
+      await priceOracle.connect(operator).proposePrice(ethers.parseUnits('1.005', ORACLE_DECIMALS));
 
-      await expect(priceOracle.connect(confirmer).confirmPrice(ethers.parseUnits('1.003', 18)))
+      await expect(priceOracle.connect(confirmer).confirmPrice(ethers.parseUnits('1.003', ORACLE_DECIMALS)))
         .to.be.revertedWithCustomError(priceOracle, 'PriceMismatch')
-        .withArgs(ethers.parseUnits('1.003', 18), ethers.parseUnits('1.005', 18));
+        .withArgs(ethers.parseUnits('1.003', ORACLE_DECIMALS), ethers.parseUnits('1.005', ORACLE_DECIMALS));
     });
 
     it('should revert when confirming an expired pending price', async function () {
       const { priceOracle, operator, confirmer } = await loadFixture(deployFixture);
 
-      await priceOracle.connect(operator).proposePrice(ethers.parseUnits('1.005', 18));
+      await priceOracle.connect(operator).proposePrice(ethers.parseUnits('1.005', ORACLE_DECIMALS));
 
       const [, proposedAt] = await priceOracle.pendingPrice();
       const ttl = await priceOracle.PENDING_PRICE_TTL();
       await time.increaseTo(proposedAt + ttl + 1n);
 
       await expect(
-        priceOracle.connect(confirmer).confirmPrice(ethers.parseUnits('1.005', 18))
+        priceOracle.connect(confirmer).confirmPrice(ethers.parseUnits('1.005', ORACLE_DECIMALS))
       ).to.be.revertedWithCustomError(priceOracle, 'PendingPriceExpired');
 
-      expect(await priceOracle.latestAnswer()).to.equal(ethers.parseUnits('1', 18));
+      expect(await priceOracle.latestAnswer()).to.equal(ethers.parseUnits('1', ORACLE_DECIMALS));
+    });
+  });
+
+  describe('getRoundData (WP-L2)', function () {
+    it('should return historical round data', async function () {
+      const { priceOracle, operator, confirmer } = await loadFixture(deployFixture);
+
+      const [roundId1, answer1, , , answeredInRound1] = await priceOracle.getRoundData(1);
+      expect(roundId1).to.equal(1);
+      expect(answer1).to.equal(ethers.parseUnits('1', ORACLE_DECIMALS));
+      expect(answeredInRound1).to.equal(1);
+
+      await priceOracle.connect(operator).proposePrice(ethers.parseUnits('1.005', ORACLE_DECIMALS));
+      await priceOracle.connect(confirmer).confirmPrice(ethers.parseUnits('1.005', ORACLE_DECIMALS));
+
+      const [roundId2, answer2, , , answeredInRound2] = await priceOracle.getRoundData(2);
+      expect(roundId2).to.equal(2);
+      expect(answer2).to.equal(ethers.parseUnits('1.005', ORACLE_DECIMALS));
+      expect(answeredInRound2).to.equal(2);
+
+      const [, answer1After] = await priceOracle.getRoundData(1);
+      expect(answer1After).to.equal(ethers.parseUnits('1', ORACLE_DECIMALS));
+    });
+
+    it('should revert for invalid round IDs', async function () {
+      const { priceOracle } = await loadFixture(deployFixture);
+
+      await expect(priceOracle.getRoundData(0)).to.be.revertedWithCustomError(priceOracle, 'InvalidRoundId');
+      await expect(priceOracle.getRoundData(2)).to.be.revertedWithCustomError(priceOracle, 'InvalidRoundId');
+    });
+  });
+
+  describe('Chainlink compatibility (WP-I4)', function () {
+    it('should return int256 from latestAnswer', async function () {
+      const { priceOracle } = await loadFixture(deployFixture);
+      const answer = await priceOracle.latestAnswer();
+      expect(answer).to.equal(ethers.parseUnits('1', ORACLE_DECIMALS));
+    });
+
+    it('should return int256 answer from latestRoundData', async function () {
+      const { priceOracle } = await loadFixture(deployFixture);
+      const [, answer] = await priceOracle.latestRoundData();
+      expect(answer).to.equal(ethers.parseUnits('1', ORACLE_DECIMALS));
+    });
+
+    it('should return uint256 from version()', async function () {
+      const { priceOracle } = await loadFixture(deployFixture);
+      expect(await priceOracle.version()).to.equal(2);
     });
   });
 });
