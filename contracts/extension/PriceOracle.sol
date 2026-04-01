@@ -248,8 +248,8 @@ contract PriceOracle is Initializable, AccessControlEnumerableUpgradeable, UUPSU
         RoundData storage round = roundData[latestRoundValue];
         round.roundId = latestRoundValue;
         round.answer = newPrice;
-        round.startedAt = block.timestamp;
-        round.updatedAt = block.timestamp;
+        round.startedAt = pendingPriceValue.proposedAt;
+        round.updatedAt = pendingPriceValue.proposedAt;
         round.answeredInRound = latestRoundValue;
 
         delete pendingPriceValue;
