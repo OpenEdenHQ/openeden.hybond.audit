@@ -37,7 +37,8 @@ contract PriceOracle is Initializable, AccessControlEnumerableUpgradeable, UUPSU
         bool exists;
     }
 
-    uint8 private decimalsValue;
+    /// @custom:oz-upgrades-unsafe-allow state-variable-immutable
+    uint8 private immutable _decimals;
 
     uint80 private latestRoundValue;
     uint256 private referencePriceValue;
@@ -69,13 +70,13 @@ contract PriceOracle is Initializable, AccessControlEnumerableUpgradeable, UUPSU
     uint256 public constant PENDING_PRICE_TTL = 1 days;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
+    constructor(uint8 decimals_) {
+        _decimals = decimals_;
         _disableInitializers();
     }
 
     /**
      * @notice Initializes the PriceOracle contract with essential configuration values
-     * @param _decimals Decimals used for the oracle price
      * @param _relativeMaxDeviation Maximum allowed deviation from the latest answer (in basis points)
      * @param _absoluteMaxDeviation Maximum allowed deviation from the reference price (in basis points)
      * @param _initPrice Initial price
@@ -83,7 +84,6 @@ contract PriceOracle is Initializable, AccessControlEnumerableUpgradeable, UUPSU
      * @param _admin Address of the administrator who can manage roles
      */
     function initialize(
-        uint8 _decimals,
         uint256 _relativeMaxDeviation,
         uint256 _absoluteMaxDeviation,
         uint256 _initPrice,
@@ -98,7 +98,6 @@ contract PriceOracle is Initializable, AccessControlEnumerableUpgradeable, UUPSU
         __AccessControl_init();
         __UUPSUpgradeable_init();
 
-        decimalsValue = _decimals;
         relativeMaxDeviationValue = _relativeMaxDeviation;
         absoluteMaxDeviationValue = _absoluteMaxDeviation;
         referencePriceValue = _referencePrice;
