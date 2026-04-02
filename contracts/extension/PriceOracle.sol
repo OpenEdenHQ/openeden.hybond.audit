@@ -35,6 +35,7 @@ contract PriceOracle is Initializable, AccessControlEnumerableUpgradeable, UUPSU
         uint256 proposedAt;
         address proposer;
         bool exists;
+        uint256 observedAt;
     }
 
     /// @custom:oz-upgrades-unsafe-allow state-variable-immutable
@@ -49,7 +50,7 @@ contract PriceOracle is Initializable, AccessControlEnumerableUpgradeable, UUPSU
     mapping(uint80 => RoundData) private roundData;
     PendingPrice private pendingPriceValue;
 
-    event PriceProposed(int256 currentPrice, int256 proposedPrice, address indexed proposer);
+    event PriceProposed(int256 currentPrice, int256 proposedPrice, uint256 observedAt, address indexed proposer);
     event PendingPriceCancelled(int256 pendingPrice, address indexed cancelledBy);
     event UpdatePrice(int256 oldPrice, int256 newPrice);
     event RoundUpdated(uint80 indexed roundId);
@@ -67,6 +68,7 @@ contract PriceOracle is Initializable, AccessControlEnumerableUpgradeable, UUPSU
     error PendingPriceExists();
     error PendingPriceExpired(uint256 proposedAt, uint256 expiredAt, uint256 currentTimestamp);
     error PriceMismatch(int256 expected, int256 actual);
+    error InvalidTimestamp();
 
     uint256 public constant PENDING_PRICE_TTL = 1 days;
 
@@ -89,12 +91,14 @@ contract PriceOracle is Initializable, AccessControlEnumerableUpgradeable, UUPSU
         uint256 _absoluteMaxDeviation,
         int256 _initPrice,
         uint256 _referencePrice,
-        address _admin
+        address _admin,
+        uint256 _priceTimestamp
     ) external initializer {
         if (_admin == address(0)) revert InvalidAddress();
         if (_relativeMaxDeviation > DEVIATION_FACTOR) revert InvalidDeviation(_relativeMaxDeviation);
         if (_absoluteMaxDeviation > DEVIATION_FACTOR) revert InvalidDeviation(_absoluteMaxDeviation);
         if (_initPrice <= 0 || _referencePrice == 0) revert InvalidPrice();
+        if (_priceTimestamp == 0 || _priceTimestamp >= block.timestamp) revert InvalidTimestamp();
 
         __AccessControl_init();
         __UUPSUpgradeable_init();
@@ -107,8 +111,8 @@ contract PriceOracle is Initializable, AccessControlEnumerableUpgradeable, UUPSU
         RoundData storage round = roundData[latestRoundValue];
         round.roundId = latestRoundValue;
         round.answer = _initPrice;
-        round.startedAt = block.timestamp;
-        round.updatedAt = block.timestamp;
+        round.startedAt = _priceTimestamp;
+        round.updatedAt = _priceTimestamp;
         round.answeredInRound = latestRoundValue;
 
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
@@ -161,9 +165,9 @@ contract PriceOracle is Initializable, AccessControlEnumerableUpgradeable, UUPSU
         return absoluteMaxDeviationValue;
     }
 
-    function pendingPrice() public view returns (int256, uint256, address, bool) {
+    function pendingPrice() public view returns (int256, uint256, address, bool, uint256) {
         PendingPrice storage pending = pendingPriceValue;
-        return (pending.value, pending.proposedAt, pending.proposer, pending.exists);
+        return (pending.value, pending.proposedAt, pending.proposer, pending.exists, pending.observedAt);
     }
 
     function isValidPriceUpdate(int256 _newPrice) public view returns (bool isValid) {
@@ -218,8 +222,9 @@ contract PriceOracle is Initializable, AccessControlEnumerableUpgradeable, UUPSU
                         OPERATOR FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
-    function proposePrice(int256 _price) external onlyRole(OPERATOR_ROLE) {
+    function proposePrice(int256 _price, uint256 _priceTimestamp) external onlyRole(OPERATOR_ROLE) {
         if (_price <= 0) revert InvalidPrice();
+        if (_priceTimestamp == 0 || _priceTimestamp >= block.timestamp) revert InvalidTimestamp();
 
         int256 latestPrice = latestAnswer();
         uint256 priceDeviation = _calculateDeviation(uint256(latestPrice), uint256(_price));
@@ -236,10 +241,11 @@ contract PriceOracle is Initializable, AccessControlEnumerableUpgradeable, UUPSU
             value: _price,
             proposedAt: block.timestamp,
             proposer: msg.sender,
-            exists: true
+            exists: true,
+            observedAt: _priceTimestamp
         });
 
-        emit PriceProposed(latestPrice, _price, msg.sender);
+        emit PriceProposed(latestPrice, _price, _priceTimestamp, msg.sender);
     }
 
     function confirmPrice(int256 _expectedPrice) external onlyRole(CONFIRMER_ROLE) {
@@ -262,8 +268,8 @@ contract PriceOracle is Initializable, AccessControlEnumerableUpgradeable, UUPSU
         RoundData storage round = roundData[latestRoundValue];
         round.roundId = latestRoundValue;
         round.answer = newPrice;
-        round.startedAt = pendingPriceValue.proposedAt;
-        round.updatedAt = pendingPriceValue.proposedAt;
+        round.startedAt = pendingPriceValue.observedAt;
+        round.updatedAt = pendingPriceValue.observedAt;
         round.answeredInRound = latestRoundValue;
 
         delete pendingPriceValue;
@@ -296,5 +302,5 @@ contract PriceOracle is Initializable, AccessControlEnumerableUpgradeable, UUPSU
                             STORAGE GAP
     //////////////////////////////////////////////////////////////*/
 
-    uint256[40] private __gap;
+    uint256[39] private __gap;
 }
