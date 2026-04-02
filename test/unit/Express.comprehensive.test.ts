@@ -371,6 +371,27 @@ describe('Express - Comprehensive Tests', function () {
         expect(feeAmt).to.equal((redeemAssetAmt * 100n) / 10000n);
         expect(netRedeemAssetAmt).to.equal(redeemAssetAmt - feeAmt);
       });
+
+      it('should apply the current shares-per-token ratio after management fee claim', async function () {
+        const fixture = await loadFixture(deployFixture);
+        const { express, user1, usdo, maintainer, operator } = await setupUserWithTokens(fixture);
+
+        await express.connect(maintainer).updateMgtFeeRate(300);
+        const timeBuffer = await express.timeBuffer();
+        await time.increase(timeBuffer);
+        await express.connect(operator).updateEpoch();
+        await express.connect(operator).claimMgtFee(await express.unclaimedMgtFee());
+
+        const redeemAmount = ethers.parseUnits('1000', 18);
+        const ratio = await express.sharesPerToken();
+        const expectedRedeemAssetAmt = trim((redeemAmount * ratio) / ethers.parseUnits('1', 18), 3);
+
+        const [, redeemAssetAmt] = await express.previewRedeem(redeemAmount);
+
+        expect(ratio).to.be.lt(ethers.parseUnits('1', 18));
+        expect(redeemAssetAmt).to.equal(expectedRedeemAssetAmt);
+        expect(redeemAssetAmt).to.be.lt(redeemAmount);
+      });
     });
 
     describe('Pending Redeem Queue', function () {
@@ -441,6 +462,36 @@ describe('Express - Comprehensive Tests', function () {
         );
       });
 
+      it('should use the T+2 ratio after management fee claim', async function () {
+        const fixture = await loadFixture(deployFixture);
+        const { express, user1, oem, maintainer, operator } = await setupUserWithTokens(fixture);
+
+        await express.connect(maintainer).updateMgtFeeRate(300);
+        const timeBuffer = await express.timeBuffer();
+        await time.increase(timeBuffer);
+        await express.connect(operator).updateEpoch();
+        await express.connect(operator).claimMgtFee(await express.unclaimedMgtFee());
+
+        const redeemAmount = ethers.parseUnits('1000', 18);
+        await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
+        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+
+        const ratioAtProcessing = await express.sharesPerToken();
+        const expectedRedeemAssetAmt = trim(
+          (redeemAmount * ratioAtProcessing) / ethers.parseUnits('1', 18),
+          3
+        );
+
+        const withdrawDelay = await express.convertRedeemRequestsDelay();
+        await time.increase(withdrawDelay);
+        await express.connect(operator).processPendingRedeems(1);
+
+        const [, , queuedShareAmount, redeemAssetAmt] = await express.getRedeemQueueInfo(0);
+        expect(queuedShareAmount).to.equal(redeemAmount);
+        expect(redeemAssetAmt).to.equal(expectedRedeemAssetAmt);
+        expect(redeemAssetAmt).to.be.lt(redeemAmount);
+      });
+
       it('should preserve original timestamp when processing', async function () {
         const fixture = await loadFixture(deployFixture);
         const { express, user1, oem, operator } = await setupUserWithTokens(fixture);
@@ -463,6 +514,53 @@ describe('Express - Comprehensive Tests', function () {
         // Check withdraw queue has correct timestamp
         const [, , , , , timestamp] = await express.getRedeemQueueInfo(0);
         expect(timestamp).to.equal(requestTimestamp);
+      });
+
+      it('should apply the same batch ratio to all redeems processed in one call', async function () {
+        const fixture = await loadFixture(deployFixture);
+        const { express, oem, usdo, user1, user2, maintainer, operator } =
+          await loadFixture(deployFixture);
+
+        const depositAmount = ethers.parseUnits('5000', 18);
+        await express
+          .connect(user1)
+          .requestDeposit(await usdo.getAddress(), depositAmount, user1.address);
+        await express
+          .connect(user2)
+          .requestDeposit(await usdo.getAddress(), depositAmount, user2.address);
+        await express.connect(maintainer).processDepositQueue(0);
+
+        await express.connect(maintainer).updateMgtFeeRate(300);
+        const timeBuffer = await express.timeBuffer();
+        await time.increase(timeBuffer);
+        await express.connect(operator).updateEpoch();
+        await express.connect(operator).claimMgtFee(await express.unclaimedMgtFee());
+
+        const redeemAmount1 = ethers.parseUnits('1000', 18);
+        const redeemAmount2 = ethers.parseUnits('2000', 18);
+        await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
+        await oem.connect(user2).approve(await express.getAddress(), ethers.MaxUint256);
+        await express.connect(user1).requestRedeem(user1.address, redeemAmount1);
+        await express.connect(user2).requestRedeem(user2.address, redeemAmount2);
+
+        const ratioAtProcessing = await express.sharesPerToken();
+        const expectedRedeemAssetAmt1 = trim(
+          (redeemAmount1 * ratioAtProcessing) / ethers.parseUnits('1', 18),
+          3
+        );
+        const expectedRedeemAssetAmt2 = trim(
+          (redeemAmount2 * ratioAtProcessing) / ethers.parseUnits('1', 18),
+          3
+        );
+
+        const withdrawDelay = await express.convertRedeemRequestsDelay();
+        await time.increase(withdrawDelay);
+        await express.connect(operator).processPendingRedeems(0);
+
+        const [, , , redeemAssetAmt1] = await express.getRedeemQueueInfo(0);
+        const [, , , redeemAssetAmt2] = await express.getRedeemQueueInfo(1);
+        expect(redeemAssetAmt1).to.equal(expectedRedeemAssetAmt1);
+        expect(redeemAssetAmt2).to.equal(expectedRedeemAssetAmt2);
       });
     });
 
@@ -2066,6 +2164,170 @@ describe('Express - Comprehensive Tests', function () {
         await oem.connect(admin).unbanAddresses([user1.address]);
         await express.connect(user1).claimDepositEscrow(user1.address, usdoAddr);
         expect(await express.depositEscrowBalance(user1.address, usdoAddr)).to.equal(0);
+      });
+    });
+
+    describe('Management Fee Dilution on Redeem', function () {
+      async function setupWithMgtFee(fixture: any) {
+        const { express, usdo, user1, user2, oem, maintainer, operator } = fixture;
+
+        // Deposit for user1 and user2
+        const depositAmount = ethers.parseUnits('5000', 18);
+        await express
+          .connect(user1)
+          .requestDeposit(await usdo.getAddress(), depositAmount, user1.address);
+        await express
+          .connect(user2)
+          .requestDeposit(await usdo.getAddress(), depositAmount, user2.address);
+        await express.connect(maintainer).processDepositQueue(0);
+
+        // Set mgt fee rate and claim to cause dilution
+        await express.connect(maintainer).updateMgtFeeRate(300); // 3% annual
+        const timeBuffer = await express.timeBuffer();
+        await time.increase(timeBuffer);
+        await express.connect(operator).updateEpoch();
+        const unclaimedFee = await express.unclaimedMgtFee();
+        await express.connect(operator).claimMgtFee(unclaimedFee);
+
+        return { ...fixture, depositAmount, claimedFee: unclaimedFee };
+      }
+
+      it('should not change redeem amounts when no mgt fees exist (regression)', async function () {
+        const fixture = await loadFixture(deployFixture);
+        const { express, usdo, user1, oem, maintainer, operator } = fixture;
+
+        const depositAmount = ethers.parseUnits('5000', 18);
+        await express
+          .connect(user1)
+          .requestDeposit(await usdo.getAddress(), depositAmount, user1.address);
+        await express.connect(maintainer).processDepositQueue(1);
+
+        const ratio = await express.sharesPerToken();
+        expect(ratio).to.equal(ethers.parseUnits('1', 18));
+
+        const redeemAmount = ethers.parseUnits('1000', 18);
+        await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
+        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+
+        const withdrawDelay = await express.convertRedeemRequestsDelay();
+        await time.increase(withdrawDelay);
+        await express.connect(operator).processPendingRedeems(1);
+
+        const [, , , redeemAssetAmt] = await express.getRedeemQueueInfo(0);
+        expect(redeemAssetAmt).to.equal(trim(redeemAmount, TRIM_DECIMALS));
+      });
+
+      it('should match previewRedeem with actual processing when no state changes between', async function () {
+        const fixture = await loadFixture(deployFixture);
+        const { express, user1, oem, operator } = await setupWithMgtFee(fixture);
+
+        const redeemAmount = ethers.parseUnits('1000', 18);
+        await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
+
+        // Preview before requesting
+        const [previewFee, previewGross, previewNet] = await express.previewRedeem(redeemAmount);
+
+        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+
+        // Process immediately after delay (no intervening claimMgtFee/deposits/cancels)
+        const withdrawDelay = await express.convertRedeemRequestsDelay();
+        await time.increase(withdrawDelay);
+        await express.connect(operator).processPendingRedeems(1);
+
+        const [, , , redeemAssetAmt, feeAssetAmt] = await express.getRedeemQueueInfo(0);
+        expect(redeemAssetAmt).to.equal(previewGross);
+        expect(feeAssetAmt).to.equal(previewFee);
+      });
+
+      it('should complete full E2E flow with mgt fees without revert', async function () {
+        const fixture = await loadFixture(deployFixture);
+        const { express, user1, usdo, oem, operator } = await setupWithMgtFee(fixture);
+
+        const ratio = await express.sharesPerToken();
+        expect(ratio).to.be.lt(ethers.parseUnits('1', 18));
+
+        const redeemAmount = ethers.parseUnits('1000', 18);
+        await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
+        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+
+        const withdrawDelay = await express.convertRedeemRequestsDelay();
+        await time.increase(withdrawDelay);
+        await express.connect(operator).processPendingRedeems(1);
+
+        // redeemAssetAmt should be less than redeemAmount due to dilution
+        const [, , , redeemAssetAmt] = await express.getRedeemQueueInfo(0);
+        expect(redeemAssetAmt).to.be.lt(redeemAmount);
+
+        const userUsdoBefore = await usdo.balanceOf(user1.address);
+
+        // processRedeemQueue should NOT revert — USDC requirement matches diluted amount
+        await expect(express.connect(operator).processRedeemQueue(1)).to.emit(
+          express,
+          'ProcessRedeem'
+        );
+
+        const userUsdoAfter = await usdo.balanceOf(user1.address);
+        expect(userUsdoAfter).to.be.gt(userUsdoBefore);
+      });
+
+      it('should recalculate ratio on revert-then-reprocess after claimMgtFee', async function () {
+        const fixture = await loadFixture(deployFixture);
+        const { express, user1, oem, maintainer, operator } = await setupWithMgtFee(fixture);
+
+        const redeemAmount = ethers.parseUnits('1000', 18);
+        await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
+        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+
+        const withdrawDelay = await express.convertRedeemRequestsDelay();
+        await time.increase(withdrawDelay);
+        await express.connect(operator).processPendingRedeems(1);
+
+        const [, , , redeemAssetAmtFirst] = await express.getRedeemQueueInfo(0);
+
+        // Revert to pending
+        await express.connect(operator).revertRedeemToPending(0);
+
+        // Claim more mgt fee to change the ratio further
+        const timeBuffer = await express.timeBuffer();
+        await time.increase(timeBuffer);
+        await express.connect(operator).updateEpoch();
+        const newUnclaimedFee = await express.unclaimedMgtFee();
+        if (newUnclaimedFee > 0n) {
+          await express.connect(operator).claimMgtFee(newUnclaimedFee);
+        }
+
+        // Reprocess — ratio should be recalculated from current state
+        await express.connect(operator).processPendingRedeems(1);
+
+        const [, , , redeemAssetAmtSecond] = await express.getRedeemQueueInfo(0);
+
+        // Second processing should use a lower ratio (more dilution)
+        expect(redeemAssetAmtSecond).to.be.lte(redeemAssetAmtFirst);
+
+        // Original token amount preserved in queue
+        const [, , queuedShareAmount] = await express.getRedeemQueueInfo(0);
+        expect(queuedShareAmount).to.equal(redeemAmount);
+      });
+
+      it('should refund full token amount on cancelPendingRedeem even with mgt fee dilution', async function () {
+        const fixture = await loadFixture(deployFixture);
+        const { express, user1, oem, maintainer } = await setupWithMgtFee(fixture);
+
+        const ratio = await express.sharesPerToken();
+        expect(ratio).to.be.lt(ethers.parseUnits('1', 18));
+
+        const redeemAmount = ethers.parseUnits('1000', 18);
+        await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
+        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+
+        const userBalanceBefore = await oem.balanceOf(user1.address);
+
+        await express.connect(maintainer).cancelPendingRedeem(1);
+
+        const userBalanceAfter = await oem.balanceOf(user1.address);
+
+        // Full token amount refunded regardless of dilution ratio
+        expect(userBalanceAfter).to.equal(userBalanceBefore + redeemAmount);
       });
     });
 

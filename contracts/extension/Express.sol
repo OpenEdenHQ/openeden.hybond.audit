@@ -766,10 +766,8 @@ contract Express is
         uint256 _shareAmount
     ) public view returns (uint256 feeAmt, uint256 redeemAssetAmt, uint256 netRedeemAssetAmt) {
         uint256 price = getPrice();
-        redeemAssetAmt = _trimAsset(
-            Math.mulDiv(convertToUnderlying(redeemAsset, _shareAmount), price, 1e18),
-            redeemAsset
-        );
+        uint256 ratio = _sharesPerToken();
+        redeemAssetAmt = _redeemAssetAmount(_shareAmount, ratio, price);
         feeAmt = txsFee(redeemAssetAmt, TxType.REDEEM);
         netRedeemAssetAmt = redeemAssetAmt - feeAmt;
     }
@@ -787,9 +785,10 @@ contract Express is
         uint256 maxToProcess = _validateQueueProcessing(pendingRedeemQueue.length(), _len);
         uint256 processed;
         uint256 currentPrice = getPrice();
+        uint256 currentRatio = _sharesPerToken();
 
         while (processed < maxToProcess && !pendingRedeemQueue.empty()) {
-            if (!_processSinglePendingRedeem(currentPrice)) {
+            if (!_processSinglePendingRedeem(currentPrice, currentRatio)) {
                 break;
             }
             unchecked {
@@ -803,9 +802,10 @@ contract Express is
     /**
      * @notice Internal helper to process a single pending redeem
      * @param currentPrice The current T+2 price to apply
+     * @param currentRatio The current T+2 shares-per-token ratio to apply to this batch
      * @return success True if redeem was processed, false if not ready yet
      */
-    function _processSinglePendingRedeem(uint256 currentPrice) internal returns (bool success) {
+    function _processSinglePendingRedeem(uint256 currentPrice, uint256 currentRatio) internal returns (bool success) {
         bytes memory data = pendingRedeemQueue.front();
         (
             address sender,
@@ -826,11 +826,8 @@ contract Express is
         pendingRedeemQueue.popFront();
         pendingRedeemInfo[receiver] -= shareAmount;
 
-        // Calculate redeemAsset amount with T+2 price (based on full token amount), trimmed to 3 decimals
-        uint256 redeemAssetAmt = _trimAsset(
-            Math.mulDiv(convertToUnderlying(redeemAsset, shareAmount), currentPrice, 1e18),
-            redeemAsset
-        );
+        // Price redeem proceeds from the batch ratio chosen by the operator's processing time.
+        uint256 redeemAssetAmt = _redeemAssetAmount(shareAmount, currentRatio, currentPrice);
 
         // Calculate fee in redeemAsset (not in token!)
         uint256 feeAssetAmt = txsFee(redeemAssetAmt, TxType.REDEEM);
@@ -1395,9 +1392,7 @@ contract Express is
      * @return ratio Shares per token in 1e18 precision
      */
     function sharesPerToken() external view returns (uint256 ratio) {
-        uint256 totalSupply = IERC20(address(token)).totalSupply();
-        if (totalSupply == 0) return 1e18;
-        ratio = Math.mulDiv(circulatingSupply(), 1e18, totalSupply);
+        ratio = _sharesPerToken();
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -1470,6 +1465,34 @@ contract Express is
      */
     function _calculateDailyMgtFee(uint256 _circulatingSupply) internal view returns (uint256 fee) {
         fee = Math.mulDiv(_circulatingSupply, mgtFeeRate, DAYS_IN_YEAR * BPS_BASE);
+    }
+
+    /**
+     * @notice Calculate the current shares-per-token ratio in 1e18 precision
+     * @dev Uses circulating supply to exclude claimed management-fee inventory and final redeem queue inventory
+     */
+    function _sharesPerToken() internal view returns (uint256 ratio) {
+        uint256 totalSupply = IERC20(address(token)).totalSupply();
+        if (totalSupply == 0) return 1e18;
+        ratio = Math.mulDiv(circulatingSupply(), 1e18, totalSupply);
+    }
+
+    /**
+     * @notice Convert token amount into redeem asset amount using a ratio and price snapshot
+     * @param _shareAmount Full token amount being redeemed
+     * @param _ratio Shares-per-token ratio in 1e18 precision
+     * @param _price Price snapshot in 1e18 precision
+     */
+    function _redeemAssetAmount(
+        uint256 _shareAmount,
+        uint256 _ratio,
+        uint256 _price
+    ) internal view returns (uint256 redeemAssetAmt) {
+        uint256 backedShareAmount = Math.mulDiv(_shareAmount, _ratio, 1e18);
+        redeemAssetAmt = _trimAsset(
+            Math.mulDiv(convertToUnderlying(redeemAsset, backedShareAmount), _price, 1e18),
+            redeemAsset
+        );
     }
 
     /**

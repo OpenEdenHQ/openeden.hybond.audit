@@ -31,7 +31,10 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   const decimals = getConfigValue<number>(priceOracleConfig, 'decimals');
   const relativeMaxDeviation = getConfigValue<number>(priceOracleConfig, 'relativeMaxDeviation');
   const absoluteMaxDeviation = getConfigValue<number>(priceOracleConfig, 'absoluteMaxDeviation');
-  const initPrice = ethers.parseUnits(getConfigValue<string>(priceOracleConfig, 'initPrice'), decimals);
+  const initPrice = ethers.parseUnits(
+    getConfigValue<string>(priceOracleConfig, 'initPrice'),
+    decimals
+  );
   const referencePrice = ethers.parseUnits(
     getConfigValue<string>(priceOracleConfig, 'referencePrice'),
     decimals
@@ -41,15 +44,29 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   const adminConfig = getConfigValue<string>(commonConfig, 'admin');
   const admin = adminConfig === ethers.ZeroAddress ? deployer : adminConfig;
 
-  // Deploy PriceOracle
+  // Deploy PriceOracle (decimals is an immutable set via constructor)
   console.log('\n1️⃣ Deploying PriceOracle...');
-  const PriceOracle = await ethers.getContractFactory('PriceOracle');
+  const PriceOracle = await ethers.getContractFactory('PriceOracle', {
+    constructorArgs: [decimals],
+  });
+  const latestBlock = await ethers.provider.getBlock('latest');
+  const initPriceTimestamp = latestBlock!.timestamp - 1;
+
   const priceOracle = await upgrades.deployProxy(
     PriceOracle,
-    [decimals, relativeMaxDeviation, absoluteMaxDeviation, initPrice, referencePrice, admin],
+    [
+      relativeMaxDeviation,
+      absoluteMaxDeviation,
+      initPrice,
+      referencePrice,
+      admin,
+      initPriceTimestamp,
+    ],
     {
       initializer: 'initialize',
       kind: 'uups',
+      constructorArgs: [decimals],
+      unsafeAllow: ['state-variable-immutable'],
     }
   );
   await priceOracle.waitForDeployment();
@@ -69,7 +86,10 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
     }
   } else {
     console.log('\n2️⃣ Skipping OPERATOR_ROLE grant');
-    console.log('⚠️  Common.admin is not the deployer. The admin must grant OPERATOR_ROLE manually to:', operator);
+    console.log(
+      '⚠️  Common.admin is not the deployer. The admin must grant OPERATOR_ROLE manually to:',
+      operator
+    );
   }
 
   // Save deployment info
@@ -113,7 +133,7 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
     try {
       await run('verify:verify', {
         address: priceOracleImpl,
-        constructorArguments: [],
+        constructorArguments: [decimals],
       });
       console.log('✅ PriceOracle implementation verified');
     } catch (error: any) {
@@ -128,7 +148,9 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   console.log('   - Update Express contract to use this PriceOracle via updatePriceOracle()');
   console.log('   - Set maxStalePeriod in Express if needed via updateMaxStalePeriod()');
   console.log('   - Grant CONFIRMER_ROLE and UPGRADE_ROLE if they are needed');
-  console.log('   - Operator can stage prices via proposePrice(), then confirmer can call confirmPrice()');
+  console.log(
+    '   - Operator can stage prices via proposePrice(), then confirmer can call confirmPrice()'
+  );
 };
 
 func.tags = ['price_oracle', 'oracle'];

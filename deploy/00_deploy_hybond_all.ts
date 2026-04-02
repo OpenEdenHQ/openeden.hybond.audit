@@ -32,8 +32,14 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   const tokenIssueCap = ethers.parseUnits(getConfigValue<string>(hybondConfig, 'issueCap'), 18);
 
   // Express parameters
-  const depositMinimum = ethers.parseUnits(getConfigValue<string>(expressConfig, 'depositMinimum'), 18);
-  const redeemMinimum = ethers.parseUnits(getConfigValue<string>(expressConfig, 'redeemMinimum'), 18);
+  const depositMinimum = ethers.parseUnits(
+    getConfigValue<string>(expressConfig, 'depositMinimum'),
+    18
+  );
+  const redeemMinimum = ethers.parseUnits(
+    getConfigValue<string>(expressConfig, 'redeemMinimum'),
+    18
+  );
   const firstDepositAmount = ethers.parseUnits(
     getConfigValue<string>(expressConfig, 'firstDepositAmount'),
     18
@@ -118,7 +124,10 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   const oracleDecimals = getConfigValue<number>(priceOracleConfig, 'decimals');
   const relativeMaxDeviation = getConfigValue<number>(priceOracleConfig, 'relativeMaxDeviation');
   const absoluteMaxDeviation = getConfigValue<number>(priceOracleConfig, 'absoluteMaxDeviation');
-  const initPrice = ethers.parseUnits(getConfigValue<string>(priceOracleConfig, 'initPrice'), oracleDecimals);
+  const initPrice = ethers.parseUnits(
+    getConfigValue<string>(priceOracleConfig, 'initPrice'),
+    oracleDecimals
+  );
   const referencePrice = ethers.parseUnits(
     getConfigValue<string>(priceOracleConfig, 'referencePrice'),
     oracleDecimals
@@ -126,12 +135,24 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   const operatorConfig = getConfigValue<string>(priceOracleConfig, 'operator');
   const operator = operatorConfig === ethers.ZeroAddress ? deployer : operatorConfig;
 
+  const latestBlock = await ethers.provider.getBlock('latest');
+  const initPriceTimestamp = latestBlock!.timestamp;
+
   const priceOracle = await upgrades.deployProxy(
     PriceOracle,
-    [oracleDecimals, relativeMaxDeviation, absoluteMaxDeviation, initPrice, referencePrice, admin],
+    [
+      relativeMaxDeviation,
+      absoluteMaxDeviation,
+      initPrice,
+      referencePrice,
+      admin,
+      initPriceTimestamp,
+    ],
     {
       initializer: 'initialize',
       kind: 'uups',
+      constructorArgs: [oracleDecimals],
+      unsafeAllow: ['state-variable-immutable'],
     }
   );
   await priceOracle.waitForDeployment();
@@ -149,7 +170,9 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
       console.log('📌 Operator already has OPERATOR_ROLE:', operator);
     }
   } else {
-    console.log('⚠️  Common.admin is not the deployer. The PriceOracle admin must grant OPERATOR_ROLE manually.');
+    console.log(
+      '⚠️  Common.admin is not the deployer. The PriceOracle admin must grant OPERATOR_ROLE manually.'
+    );
   }
   console.log('📌 Initial Price:', ethers.formatUnits(initPrice, oracleDecimals));
   console.log(
@@ -261,7 +284,10 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   console.log('PriceOracle:', priceOracleAddress);
   console.log('Express:', expressAddress);
   console.log('\n📌 Configuration:');
-  console.log('  HYBOND Issue Cap:', tokenIssueCap > 0 ? ethers.formatEther(tokenIssueCap) : 'Unlimited');
+  console.log(
+    '  HYBOND Issue Cap:',
+    tokenIssueCap > 0 ? ethers.formatEther(tokenIssueCap) : 'Unlimited'
+  );
   console.log('  Deposit Minimum:', ethers.formatEther(depositMinimum), 'HYBOND');
   console.log('  Redeem Minimum:', ethers.formatEther(redeemMinimum), 'HYBOND');
   console.log('  First Deposit Amount:', ethers.formatEther(firstDepositAmount), 'HYBOND');
@@ -310,7 +336,7 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
 
     await verifyContract('HYBOND', hybondImpl);
     await verifyContract('AssetRegistry', assetRegistryImpl);
-    await verifyContract('PriceOracle', priceOracleImpl);
+    await verifyContract('PriceOracle', priceOracleImpl, [oracleDecimals]);
     await verifyContract('Express', expressImpl);
   } else {
     console.log('\n🛑 Skipping verification on local network.');
