@@ -15,3 +15,9 @@ cache
 artifacts
 
 .env.keys
+
+# Working notes
+claude-code-mgt-fee.md
+codex-mgt-fee.md
+codex-sequencing-note.md
+deployments/
