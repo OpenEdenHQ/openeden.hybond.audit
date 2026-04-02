@@ -101,7 +101,6 @@ contract PriceOracle is Initializable, AccessControlEnumerableUpgradeable, UUPSU
         if (_priceTimestamp == 0 || _priceTimestamp >= block.timestamp) revert InvalidTimestamp();
 
         __AccessControl_init();
-        __UUPSUpgradeable_init();
 
         relativeMaxDeviationValue = _relativeMaxDeviation;
         absoluteMaxDeviationValue = _absoluteMaxDeviation;

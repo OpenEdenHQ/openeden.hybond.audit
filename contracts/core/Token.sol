@@ -71,7 +71,6 @@ contract Token is
         __ERC20_init(_name, _symbol);
         __ERC20Pausable_init();
         __AccessControlEnumerable_init();
-        __UUPSUpgradeable_init();
 
         if (_admin == address(0)) revert InvalidAddress();
 

@@ -47,14 +47,14 @@ const config: HardhatUserConfig = {
     target: 'ethers-v6',
   },
   solidity: {
-    version: '0.8.22',
+    version: '0.8.24',
     settings: {
       optimizer: {
         enabled: true,
         runs: 100,
       },
       viaIR: true,
-      // evmVersion: 'paris',
+      evmVersion: 'cancun',
     },
   },
   sourcify: {

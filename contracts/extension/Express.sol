@@ -326,7 +326,6 @@ contract Express is
         ) revert InvalidAddress();
 
         __AccessControlEnumerable_init();
-        __UUPSUpgradeable_init();
 
         token = IToken(_token);
         redeemAsset = _redeemAsset;

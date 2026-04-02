@@ -41,7 +41,6 @@ contract AssetRegistry is IAssetRegistry, UUPSUpgradeable, Ownable2StepUpgradeab
     function initialize(address _owner) external initializer {
         __Ownable_init(_owner);
         __Ownable2Step_init();
-        __UUPSUpgradeable_init();
     }
 
     function _authorizeUpgrade(address) internal override onlyOwner {}
