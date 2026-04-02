@@ -104,7 +104,7 @@ contract Express is
     // Last update timestamp for epoch management
     uint256 public lastUpdateTS;
 
-    // Unclaimed management fee
+    // Deprecated legacy slot kept only to preserve storage layout across upgrades.
     uint256 public unclaimedMgtFee;
 
     // Minimum time between epoch updates (e.g., 20 hours)
@@ -158,7 +158,6 @@ contract Express is
     event UpdateMgtFeeTo(address indexed mgtFeeTo);
     event UpdateAssetRegistry(address indexed newRegistry);
     event UpdateEpoch(uint256 unclaimedMgtFee, uint256 dailyFee, uint256 epoch, uint256 circulatingSupply);
-    event ClaimMgtFee(address indexed to, uint256 amount);
     event UpdateTimeBuffer(uint256 timeBuffer);
     event UpdatePriceOracle(address indexed priceOracle);
     event UpdateMaxStalePeriod(uint256 maxStalePeriod);
@@ -275,6 +274,7 @@ contract Express is
     error StalePriceData(uint256 updatedAt, uint256 currentTime, uint256 maxStalePeriod);
     error IncompleteRound(uint80 answeredInRound, uint80 roundId);
     error NoPendingRedeemsReady();
+    error MgtFeeDisabled();
     error UseRequestDeposit();
     error UseRequestRedeem();
     error QueuesNotEmpty();
@@ -1324,10 +1324,12 @@ contract Express is
 
     /**
      * @notice Shared epoch update logic for default and adjusted paths
+     * @dev Mints the daily management fee immediately to mgtFeeTo.
      * @param _circulatingSupply Manual circulating supply value
      * @param _useOverride Whether to use manual circulating supply
      */
     function _updateEpochInternal(uint256 _circulatingSupply, bool _useOverride) internal {
+        if (mgtFeeRate == 0) revert MgtFeeDisabled();
         if (lastUpdateTS != 0 && block.timestamp < lastUpdateTS + timeBuffer) {
             revert UpdateTooEarly(block.timestamp);
         }
@@ -1344,24 +1346,13 @@ contract Express is
         }
 
         uint256 dailyFee = _trim(_calculateDailyMgtFee(circulating));
-        unclaimedMgtFee += dailyFee;
+        if (dailyFee > 0) {
+            if (mgtFeeTo == address(0)) revert InvalidAddress();
+            token.mint(mgtFeeTo, dailyFee);
+        }
 
         lastUpdateTS = block.timestamp;
         emit UpdateEpoch(unclaimedMgtFee, dailyFee, epoch, circulating);
-    }
-
-    /**
-     * @notice Claim accrued management fees
-     * @param _amount Amount of management fee to claim
-     */
-    function claimMgtFee(uint256 _amount) external onlyRole(OPERATOR_ROLE) {
-        if (mgtFeeTo == address(0)) revert InvalidAddress();
-        if (_amount > unclaimedMgtFee) revert InvalidAmount();
-
-        unclaimedMgtFee -= _amount;
-        token.mint(mgtFeeTo, _amount);
-
-        emit ClaimMgtFee(mgtFeeTo, _amount);
     }
 
     /**

@@ -372,7 +372,7 @@ describe('Express - Comprehensive Tests', function () {
         expect(netRedeemAssetAmt).to.equal(redeemAssetAmt - feeAmt);
       });
 
-      it('should apply the current shares-per-token ratio after management fee claim', async function () {
+      it('should apply the current shares-per-token ratio after daily management fee mint', async function () {
         const fixture = await loadFixture(deployFixture);
         const { express, user1, usdo, maintainer, operator } = await setupUserWithTokens(fixture);
 
@@ -380,7 +380,6 @@ describe('Express - Comprehensive Tests', function () {
         const timeBuffer = await express.timeBuffer();
         await time.increase(timeBuffer);
         await express.connect(operator).updateEpoch();
-        await express.connect(operator).claimMgtFee(await express.unclaimedMgtFee());
 
         const redeemAmount = ethers.parseUnits('1000', 18);
         const ratio = await express.sharesPerToken();
@@ -462,7 +461,7 @@ describe('Express - Comprehensive Tests', function () {
         );
       });
 
-      it('should use the T+2 ratio after management fee claim', async function () {
+      it('should use the T+2 ratio after daily management fee mint', async function () {
         const fixture = await loadFixture(deployFixture);
         const { express, user1, oem, maintainer, operator } = await setupUserWithTokens(fixture);
 
@@ -470,7 +469,6 @@ describe('Express - Comprehensive Tests', function () {
         const timeBuffer = await express.timeBuffer();
         await time.increase(timeBuffer);
         await express.connect(operator).updateEpoch();
-        await express.connect(operator).claimMgtFee(await express.unclaimedMgtFee());
 
         const redeemAmount = ethers.parseUnits('1000', 18);
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
@@ -534,7 +532,6 @@ describe('Express - Comprehensive Tests', function () {
         const timeBuffer = await express.timeBuffer();
         await time.increase(timeBuffer);
         await express.connect(operator).updateEpoch();
-        await express.connect(operator).claimMgtFee(await express.unclaimedMgtFee());
 
         const redeemAmount1 = ethers.parseUnits('1000', 18);
         const redeemAmount2 = ethers.parseUnits('2000', 18);
@@ -1008,7 +1005,7 @@ describe('Express - Comprehensive Tests', function () {
   });
 
   describe('Management Fee Accrual', function () {
-    it('should accrue daily management fees', async function () {
+    it('should mint daily management fees during updateEpoch', async function () {
       const { express, operator, maintainer, oem, user1, usdo } = await loadFixture(deployFixture);
 
       // Setup tokens in circulation
@@ -1034,13 +1031,15 @@ describe('Express - Comprehensive Tests', function () {
       const epochAfter = await express.epoch();
       expect(epochAfter).to.equal(epochBefore + 1n);
 
-      // Check unclaimed fee was accrued
-      const unclaimedFee = await express.unclaimedMgtFee();
-      expect(unclaimedFee).to.be.gt(0);
+      const mgtFeeTo = await express.mgtFeeTo();
+      expect(await oem.balanceOf(mgtFeeTo)).to.be.gt(0);
+      expect(await express.unclaimedMgtFee()).to.equal(0);
     });
 
     it('should revert if updating epoch too early', async function () {
-      const { express, operator } = await loadFixture(deployFixture);
+      const { express, operator, maintainer } = await loadFixture(deployFixture);
+
+      await express.connect(maintainer).updateMgtFeeRate(300);
 
       // First update is allowed
       await express.connect(operator).updateEpoch();
@@ -1052,9 +1051,26 @@ describe('Express - Comprehensive Tests', function () {
       );
     });
 
-    it('should allow claiming accumulated management fees', async function () {
-      const { express, operator, maintainer, oem, user1, usdo, admin } =
-        await loadFixture(deployFixture);
+    it('should revert updateEpoch when mgtFeeRate is zero', async function () {
+      const { express, operator } = await loadFixture(deployFixture);
+
+      await expect(express.connect(operator).updateEpoch()).to.be.revertedWithCustomError(
+        express,
+        'MgtFeeDisabled'
+      );
+    });
+
+    it('should revert updateEpochAdjust when mgtFeeRate is zero', async function () {
+      const { express, maintainer } = await loadFixture(deployFixture);
+
+      await expect(express.connect(maintainer).updateEpochAdjust(0)).to.be.revertedWithCustomError(
+        express,
+        'MgtFeeDisabled'
+      );
+    });
+
+    it('should leave unclaimedMgtFee unused in the daily mint flow', async function () {
+      const { express, operator, maintainer, oem, user1, usdo } = await loadFixture(deployFixture);
 
       // Setup tokens and fees
       const mintAmount = ethers.parseUnits('100000', 18);
@@ -1065,21 +1081,14 @@ describe('Express - Comprehensive Tests', function () {
 
       await express.connect(maintainer).updateMgtFeeRate(300);
 
+      const mgtFeeTo = await express.mgtFeeTo();
+      const balanceBefore = await oem.balanceOf(mgtFeeTo);
       const timeBuffer = await express.timeBuffer();
       await time.increase(timeBuffer);
       await express.connect(operator).updateEpoch();
 
-      const mgtFeeTo = await express.mgtFeeTo();
-      const unclaimedFee = await express.unclaimedMgtFee();
-      const balanceBefore = await oem.balanceOf(mgtFeeTo);
-
-      // Claim fee
-      await express.connect(operator).claimMgtFee(unclaimedFee);
-
       const balanceAfter = await oem.balanceOf(mgtFeeTo);
-      expect(balanceAfter).to.equal(balanceBefore + unclaimedFee);
-
-      // Unclaimed should be reset
+      expect(balanceAfter).to.be.gt(balanceBefore);
       expect(await express.unclaimedMgtFee()).to.equal(0);
     });
   });
@@ -1356,6 +1365,28 @@ describe('Express - Comprehensive Tests', function () {
       await express.connect(operator).processRedeemQueue(0);
       expect(await express.totalRedeemQueueShares()).to.equal(0);
     });
+
+    it('should decrease circulating supply when holders burn tokens outside redeem flow', async function () {
+      const { express, oem, usdo, admin, operator, user1, maintainer } =
+        await loadFixture(deployFixture);
+
+      const depositAmount = ethers.parseUnits('5000', 18);
+      await express.connect(user1).requestDeposit(await usdo.getAddress(), depositAmount, user1.address);
+      await express.connect(maintainer).processDepositQueue(1);
+
+      const BURNER_ROLE = await oem.BURNER_ROLE();
+      await oem.connect(admin).grantRole(BURNER_ROLE, operator.address);
+
+      const burnAmount = ethers.parseUnits('250', 18);
+      const totalSupplyBefore = await oem.totalSupply();
+      const circulatingBefore = await express.circulatingSupply();
+
+      await oem.connect(operator).burn(user1.address, burnAmount);
+
+      expect(await oem.totalSupply()).to.equal(totalSupplyBefore - burnAmount);
+      expect(await express.circulatingSupply()).to.equal(circulatingBefore - burnAmount);
+      expect(await express.sharesPerToken()).to.equal(ethers.parseUnits('1', 18));
+    });
   });
 
   describe('Shares Per Token', function () {
@@ -1461,7 +1492,7 @@ describe('Express - Comprehensive Tests', function () {
       }
     });
 
-    it('should decrease when mgtFee is claimed', async function () {
+    it('should decrease when daily mgt fee is minted in updateEpoch', async function () {
       const { express, oem, user1, usdo, maintainer, operator } = await loadFixture(deployFixture);
 
       // Deposit
@@ -1473,14 +1504,8 @@ describe('Express - Comprehensive Tests', function () {
       await express.connect(maintainer).updateMgtFeeRate(300);
       const timeBuffer = await express.timeBuffer();
       await time.increase(timeBuffer);
-      await express.connect(operator).updateEpoch();
-
       const ratioBefore = await express.sharesPerToken();
-
-      // Claim mgt fee (mints to mgtFeeTo, increasing totalSupply but not circulating proportionally)
-      const unclaimedFee = await express.unclaimedMgtFee();
-      await express.connect(operator).claimMgtFee(unclaimedFee);
-
+      await express.connect(operator).updateEpoch();
       const ratioAfter = await express.sharesPerToken();
 
       // mgtFeeTo balance is excluded from circulating, so ratio decreases
@@ -1515,11 +1540,11 @@ describe('Express - Comprehensive Tests', function () {
       await time.increase(timeBuffer);
       await express.connect(operator).updateEpoch();
 
-      const unclaimedFee = await express.unclaimedMgtFee();
-
       // Expected daily fee = trim(circulating * 300 / (365 * 10000))
       const expectedFee = trim((circulating * 300n) / (365n * 10000n), TRIM_DECIMALS);
-      expect(unclaimedFee).to.equal(expectedFee);
+      const mgtFeeTo = await express.mgtFeeTo();
+      expect(await oem.balanceOf(mgtFeeTo)).to.equal(expectedFee);
+      expect(await express.unclaimedMgtFee()).to.equal(0);
     });
 
     it('should accrue higher fee when no tokens in withdraw queue', async function () {
@@ -1536,7 +1561,8 @@ describe('Express - Comprehensive Tests', function () {
       const timeBuffer = await express.timeBuffer();
       await time.increase(timeBuffer);
       await express.connect(operator).updateEpoch();
-      const fee1 = await express.unclaimedMgtFee();
+      const mgtFeeTo = await express.mgtFeeTo();
+      const fee1 = await oem.balanceOf(mgtFeeTo);
 
       // Now request withdraw and move to final queue
       const withdrawAmount = ethers.parseUnits('50000', 18);
@@ -1550,7 +1576,7 @@ describe('Express - Comprehensive Tests', function () {
       // Epoch 2: with withdraw queue (lower circulating)
       await time.increase(timeBuffer);
       await express.connect(operator).updateEpoch();
-      const totalFee = await express.unclaimedMgtFee();
+      const totalFee = await oem.balanceOf(mgtFeeTo);
       const fee2 = totalFee - fee1;
 
       // fee2 should be less than fee1 because circulating supply is lower
@@ -1558,7 +1584,7 @@ describe('Express - Comprehensive Tests', function () {
     });
 
     it('should accrue zero fee when circulating supply is zero', async function () {
-      const { express, operator, maintainer } = await loadFixture(deployFixture);
+      const { express, oem, operator, maintainer } = await loadFixture(deployFixture);
 
       // Set mgt fee
       await express.connect(maintainer).updateMgtFeeRate(300);
@@ -1569,6 +1595,7 @@ describe('Express - Comprehensive Tests', function () {
       await express.connect(operator).updateEpoch();
 
       expect(await express.unclaimedMgtFee()).to.equal(0);
+      expect(await oem.totalSupply()).to.equal(0);
     });
 
     it('should not count pending withdraw tokens in fee calculation', async function () {
@@ -1600,9 +1627,10 @@ describe('Express - Comprehensive Tests', function () {
       await time.increase(timeBuffer);
       await express.connect(operator).updateEpoch();
 
-      const unclaimedFee = await express.unclaimedMgtFee();
       const expectedFee = trim((circulating * 300n) / (365n * 10000n), TRIM_DECIMALS);
-      expect(unclaimedFee).to.equal(expectedFee);
+      const feeMintedToday = await oem.balanceOf(mgtFeeTo);
+      expect(feeMintedToday).to.equal(expectedFee);
+      expect(await express.unclaimedMgtFee()).to.equal(0);
     });
 
     it('should use override circulating supply when provided', async function () {
@@ -1621,9 +1649,10 @@ describe('Express - Comprehensive Tests', function () {
       await time.increase(timeBuffer);
       await express.connect(maintainer).updateEpochAdjust(overrideSupply);
 
-      const unclaimedFee = await express.unclaimedMgtFee();
       const expectedFee = trim((overrideSupply * 300n) / (365n * 10000n), TRIM_DECIMALS);
-      expect(unclaimedFee).to.equal(expectedFee);
+      const mgtFeeTo = await express.mgtFeeTo();
+      expect(await oem.balanceOf(mgtFeeTo)).to.equal(expectedFee);
+      expect(await express.unclaimedMgtFee()).to.equal(0);
     });
 
     it('should revert when override exceeds total supply', async function () {
@@ -1666,9 +1695,10 @@ describe('Express - Comprehensive Tests', function () {
         'UpdateEpoch'
       );
 
-      const unclaimedFee = await express.unclaimedMgtFee();
       const expectedFee = trim((totalSupply * 300n) / (365n * 10000n), TRIM_DECIMALS);
-      expect(unclaimedFee).to.equal(expectedFee);
+      const mgtFeeTo = await express.mgtFeeTo();
+      expect(await oem.balanceOf(mgtFeeTo)).to.equal(expectedFee);
+      expect(await express.unclaimedMgtFee()).to.equal(0);
     });
 
     it('should produce different fees for override vs on-chain calculation', async function () {
@@ -1685,14 +1715,15 @@ describe('Express - Comprehensive Tests', function () {
       const timeBuffer = await express.timeBuffer();
       await time.increase(timeBuffer);
       await express.connect(operator).updateEpoch();
-      const fee1 = await express.unclaimedMgtFee();
+      const mgtFeeTo = await express.mgtFeeTo();
+      const fee1 = await oem.balanceOf(mgtFeeTo);
 
       // Epoch 2: use override with half the circulating supply
       const circulating = await express.circulatingSupply();
       const halfCirculating = circulating / 2n;
       await time.increase(timeBuffer);
       await express.connect(maintainer).updateEpochAdjust(halfCirculating);
-      const totalFee = await express.unclaimedMgtFee();
+      const totalFee = await oem.balanceOf(mgtFeeTo);
       const fee2 = totalFee - fee1;
 
       // fee2 should be roughly half of fee1
@@ -1843,10 +1874,12 @@ describe('Express - Comprehensive Tests', function () {
         await time.increase(timeBuffer);
         await express.connect(operator).updateEpoch();
 
-        const fee = await express.unclaimedMgtFee();
+        const mgtFeeTo = await express.mgtFeeTo();
+        const fee = await oem.balanceOf(mgtFeeTo);
         // Last 15 digits should be zero (trimmed to 3 decimals)
         expect(fee % 10n ** 15n).to.equal(0);
         expect(fee).to.be.gt(0);
+        expect(await express.unclaimedMgtFee()).to.equal(0);
       });
 
       it('should produce different fee precision with different trimDecimals', async function () {
@@ -1863,7 +1896,8 @@ describe('Express - Comprehensive Tests', function () {
         const timeBuffer = await express.timeBuffer();
         await time.increase(timeBuffer);
         await express.connect(operator).updateEpoch();
-        const fee3 = await express.unclaimedMgtFee();
+        const mgtFeeTo = await express.mgtFeeTo();
+        const fee3 = await oem.balanceOf(mgtFeeTo);
 
         // Change to 6 decimals
         await express.connect(maintainer).updateTrimDecimals(6);
@@ -1871,7 +1905,7 @@ describe('Express - Comprehensive Tests', function () {
         // Epoch 2: trimDecimals = 6
         await time.increase(timeBuffer);
         await express.connect(operator).updateEpoch();
-        const totalFee = await express.unclaimedMgtFee();
+        const totalFee = await oem.balanceOf(mgtFeeTo);
         const fee6 = BigInt(totalFee) - BigInt(fee3);
 
         // fee with 6 decimals should have more precision (last 12 digits zeroed, not 15)
@@ -1879,6 +1913,7 @@ describe('Express - Comprehensive Tests', function () {
         const trim6Factor = 10n ** 12n;
         expect(fee3 % trim3Factor).to.equal(0n);
         expect(fee6 % trim6Factor).to.equal(0n);
+        expect(await express.unclaimedMgtFee()).to.equal(0);
       });
     });
 
@@ -2181,15 +2216,15 @@ describe('Express - Comprehensive Tests', function () {
           .requestDeposit(await usdo.getAddress(), depositAmount, user2.address);
         await express.connect(maintainer).processDepositQueue(0);
 
-        // Set mgt fee rate and claim to cause dilution
+        // Set mgt fee rate and mint one daily fee to cause dilution
         await express.connect(maintainer).updateMgtFeeRate(300); // 3% annual
         const timeBuffer = await express.timeBuffer();
         await time.increase(timeBuffer);
         await express.connect(operator).updateEpoch();
-        const unclaimedFee = await express.unclaimedMgtFee();
-        await express.connect(operator).claimMgtFee(unclaimedFee);
+        const mgtFeeTo = await express.mgtFeeTo();
+        const mintedFee = await oem.balanceOf(mgtFeeTo);
 
-        return { ...fixture, depositAmount, claimedFee: unclaimedFee };
+        return { ...fixture, depositAmount, mintedFee };
       }
 
       it('should not change redeem amounts when no mgt fees exist (regression)', async function () {
@@ -2229,7 +2264,7 @@ describe('Express - Comprehensive Tests', function () {
 
         await express.connect(user1).requestRedeem(user1.address, redeemAmount);
 
-        // Process immediately after delay (no intervening claimMgtFee/deposits/cancels)
+        // Process immediately after delay (no intervening updateEpoch/deposits/cancels)
         const withdrawDelay = await express.convertRedeemRequestsDelay();
         await time.increase(withdrawDelay);
         await express.connect(operator).processPendingRedeems(1);
@@ -2270,7 +2305,31 @@ describe('Express - Comprehensive Tests', function () {
         expect(userUsdoAfter).to.be.gt(userUsdoBefore);
       });
 
-      it('should recalculate ratio on revert-then-reprocess after claimMgtFee', async function () {
+      it('should calculate the exact diluted redeem amount after daily fee mint', async function () {
+        const fixture = await loadFixture(deployFixture);
+        const { express, user1, oem, operator } = await setupWithMgtFee(fixture);
+
+        const redeemAmount = ethers.parseUnits('1000', 18);
+        const ratioAtProcessing = await express.sharesPerToken();
+        const expectedRedeemAssetAmt = trim(
+          (redeemAmount * ratioAtProcessing) / ethers.parseUnits('1', 18),
+          TRIM_DECIMALS
+        );
+
+        await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
+        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+
+        const redeemDelay = await express.convertRedeemRequestsDelay();
+        await time.increase(redeemDelay);
+        await express.connect(operator).processPendingRedeems(1);
+
+        const [, , queuedShareAmount, redeemAssetAmt] = await express.getRedeemQueueInfo(0);
+        expect(queuedShareAmount).to.equal(redeemAmount);
+        expect(redeemAssetAmt).to.equal(expectedRedeemAssetAmt);
+        expect(redeemAssetAmt).to.be.lt(redeemAmount);
+      });
+
+      it('should recalculate ratio on revert-then-reprocess after another daily fee mint', async function () {
         const fixture = await loadFixture(deployFixture);
         const { express, user1, oem, maintainer, operator } = await setupWithMgtFee(fixture);
 
@@ -2287,14 +2346,10 @@ describe('Express - Comprehensive Tests', function () {
         // Revert to pending
         await express.connect(operator).revertRedeemToPending(0);
 
-        // Claim more mgt fee to change the ratio further
+        // Mint another daily mgt fee to change the ratio further
         const timeBuffer = await express.timeBuffer();
         await time.increase(timeBuffer);
         await express.connect(operator).updateEpoch();
-        const newUnclaimedFee = await express.unclaimedMgtFee();
-        if (newUnclaimedFee > 0n) {
-          await express.connect(operator).claimMgtFee(newUnclaimedFee);
-        }
 
         // Reprocess — ratio should be recalculated from current state
         await express.connect(operator).processPendingRedeems(1);
@@ -2328,6 +2383,85 @@ describe('Express - Comprehensive Tests', function () {
 
         // Full token amount refunded regardless of dilution ratio
         expect(userBalanceAfter).to.equal(userBalanceBefore + redeemAmount);
+      });
+
+      it('should clear pending redeem accounting on cancelPendingRedeem with mgt fee dilution', async function () {
+        const fixture = await loadFixture(deployFixture);
+        const { express, user1, oem, maintainer } = await setupWithMgtFee(fixture);
+
+        const redeemAmount = ethers.parseUnits('1000', 18);
+        await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
+
+        const circulatingBefore = await express.circulatingSupply();
+        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+
+        expect(await express.pendingRedeemInfo(user1.address)).to.equal(redeemAmount);
+        expect(await express.getPendingRedeemQueueLength()).to.equal(1);
+        expect(await express.circulatingSupply()).to.equal(circulatingBefore);
+
+        await express.connect(maintainer).cancelPendingRedeem(1);
+
+        expect(await express.pendingRedeemInfo(user1.address)).to.equal(0);
+        expect(await express.getPendingRedeemQueueLength()).to.equal(0);
+        expect(await express.circulatingSupply()).to.equal(circulatingBefore);
+      });
+
+      it('should refund full token amount and restore final queue accounting on cancelRedeem with mgt fee dilution', async function () {
+        const fixture = await loadFixture(deployFixture);
+        const { express, user1, oem, maintainer, operator } = await setupWithMgtFee(fixture);
+
+        const redeemAmount = ethers.parseUnits('1000', 18);
+        await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
+
+        const circulatingBefore = await express.circulatingSupply();
+        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+
+        const redeemDelay = await express.convertRedeemRequestsDelay();
+        await time.increase(redeemDelay);
+        await express.connect(operator).processPendingRedeems(1);
+
+        const userBalanceBeforeCancel = await oem.balanceOf(user1.address);
+        expect(await express.redeemInfo(user1.address)).to.equal(redeemAmount);
+        expect(await express.totalRedeemQueueShares()).to.equal(redeemAmount);
+        expect(await express.circulatingSupply()).to.equal(circulatingBefore - redeemAmount);
+
+        await express.connect(maintainer).cancelRedeem(1);
+
+        expect(await express.redeemInfo(user1.address)).to.equal(0);
+        expect(await express.totalRedeemQueueShares()).to.equal(0);
+        expect(await express.getRedeemQueueLength()).to.equal(0);
+        expect(await express.circulatingSupply()).to.equal(circulatingBefore);
+        expect(await oem.balanceOf(user1.address)).to.equal(userBalanceBeforeCancel + redeemAmount);
+      });
+
+      it('should reprice pending redeems if a deposit is processed first after dilution (negative ordering case)', async function () {
+        const fixture = await loadFixture(deployFixture);
+        const { express, usdo, user1, user2, oem, maintainer, operator } =
+          await setupWithMgtFee(fixture);
+
+        const redeemAmount = ethers.parseUnits('1000', 18);
+        await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
+
+        const [, previewBeforeDeposit] = await express.previewRedeem(redeemAmount);
+        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+
+        const depositAmount = ethers.parseUnits('5000', 18);
+        await express
+          .connect(user2)
+          .requestDeposit(await usdo.getAddress(), depositAmount, user2.address);
+
+        const ratioBeforeDeposit = await express.sharesPerToken();
+        await express.connect(maintainer).processDepositQueue(1);
+        const ratioAfterDeposit = await express.sharesPerToken();
+
+        expect(ratioAfterDeposit).to.be.gt(ratioBeforeDeposit);
+
+        const redeemDelay = await express.convertRedeemRequestsDelay();
+        await time.increase(redeemDelay);
+        await express.connect(operator).processPendingRedeems(1);
+
+        const [, , , redeemAssetAmtAfterDeposit] = await express.getRedeemQueueInfo(0);
+        expect(redeemAssetAmtAfterDeposit).to.be.gt(previewBeforeDeposit);
       });
     });
 
