@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -35,13 +34,7 @@ enum TxType {
     REDEEM
 }
 
-contract Express is
-    Initializable,
-    UUPSUpgradeable,
-    AccessControlEnumerableUpgradeable,
-    ExpressPausable,
-    DepositRedeemLimiter
-{
+contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, ExpressPausable, DepositRedeemLimiter {
     using Math for uint256;
     using DoubleQueueModified for DoubleQueueModified.BytesDeque;
     using SafeERC20 for IERC20;
