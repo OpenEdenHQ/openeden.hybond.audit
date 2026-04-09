@@ -36,11 +36,12 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
     await express.connect(user).requestRedeem(user.address, amount);
   }
 
-  // Helper: advance past T+2 delay and process pending redeems
+  // Helper: advance past T+2 delay, snapshot ratio, and process pending redeems
   async function processPendingRedeemsAfterDelay(fixture: any, len: number = 0) {
     const { express, operator } = fixture;
     const delay = await express.convertRedeemRequestsDelay();
     await time.increase(delay);
+    await express.connect(operator).snapshotPendingRedeemRatio();
     await express.connect(operator).processPendingRedeems(len);
   }
 
@@ -150,6 +151,7 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
 
       const delay = await express.convertRedeemRequestsDelay();
       await time.increase(delay);
+      await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(1);
 
       // The locked-in USDC should be less than the redeemAmount
@@ -251,7 +253,7 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
   // 3. Queue processing order: processDeposit before processPendingRedeem (negative case)
   // =========================================================================
   describe('Queue Processing Order Impact', function () {
-    it('should give redeemers MORE USDC when processDepositQueue runs BEFORE processPendingRedeems (wrong order)', async function () {
+    it('should lock redeem ratio at snapshot time regardless of processDepositQueue ordering', async function () {
       const fixture = await loadFixture(deployFixture);
       const { express, usdo, user1, user2, maintainer, operator } = fixture;
 
@@ -268,27 +270,22 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
         .connect(user2)
         .requestDeposit(await usdo.getAddress(), depositAmount, user2.address);
 
+      // Snapshot ratio BEFORE any processing — locks the ratio for the redeem
+      await express.connect(operator).snapshotPendingRedeemRatio();
+
       // Advance past T+2
       const delay = await express.convertRedeemRequestsDelay();
       await time.increase(delay);
 
-      // WRONG ORDER: processDeposit first, then processPendingRedeems
-      const ratioBeforeDeposit = await express.sharesPerToken();
-      await express.connect(maintainer).processDepositQueue(1); // mints 50k tokens
-      const ratioAfterDeposit = await express.sharesPerToken();
-
-      // Ratio increases because new circulating tokens dilute the mgtFeeTo "dead weight"
-      expect(ratioAfterDeposit).to.be.gt(ratioBeforeDeposit);
-
+      // Even with "wrong" order (processDeposit first), ratio is already locked
+      await express.connect(maintainer).processDepositQueue(1);
       await express.connect(operator).processPendingRedeems(1);
 
-      // The redeemer got priced at the HIGHER ratio (more USDC)
-      // This is unfair to new depositors
       const redeemQueueLen = await express.getRedeemQueueLength();
       expect(redeemQueueLen).to.equal(1n);
     });
 
-    it('should give redeemers LESS USDC when processPendingRedeems runs BEFORE processDepositQueue (correct order)', async function () {
+    it('should produce same redeem result regardless of processing order when ratio is snapshotted', async function () {
       const fixture = await loadFixture(deployFixture);
       const { express, usdo, user1, user2, maintainer, operator } = fixture;
 
@@ -303,14 +300,14 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
         .connect(user2)
         .requestDeposit(await usdo.getAddress(), depositAmount, user2.address);
 
+      // Snapshot ratio before processing
+      await express.connect(operator).snapshotPendingRedeemRatio();
+
       const delay = await express.convertRedeemRequestsDelay();
       await time.increase(delay);
 
-      // CORRECT ORDER: processPendingRedeems first, then processDeposit
-      const ratioBeforeRedeem = await express.sharesPerToken();
+      // "Correct" order: processPendingRedeems first, then processDeposit
       await express.connect(operator).processPendingRedeems(1);
-
-      // Ratio at processing time — before deposit inflated it
       await express.connect(maintainer).processDepositQueue(1);
 
       const redeemQueueLen = await express.getRedeemQueueLength();
@@ -364,13 +361,14 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
       const ratioBefore = await express.sharesPerToken();
       expect(ratioBefore).to.equal(ONE);
 
-      // Deposit first (wrong order) — ratio still 1:1
+      // Snapshot and process — ratio still 1:1
+      await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(maintainer).processDepositQueue(1);
       const ratioAfterDeposit = await express.sharesPerToken();
       expect(ratioAfterDeposit).to.equal(ONE);
 
       await express.connect(operator).processPendingRedeems(1);
-      // No difference — both orderings produce the same result when fee=0
+      // No difference — ratio is always 1:1 when fee=0
     });
   });
 
@@ -529,6 +527,7 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
       await time.increase(delay);
 
       const ratioAtRedeem = await express.sharesPerToken();
+      await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(1);
 
       // Then accrue another epoch
@@ -557,7 +556,8 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
       const delay = await express.convertRedeemRequestsDelay();
       await time.increase(delay);
 
-      // Process all (len=0)
+      // Snapshot and process all (len=0)
+      await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(0);
 
       expect(await express.getPendingRedeemQueueLength()).to.equal(0n);
@@ -641,7 +641,8 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
       const delay = await express.convertRedeemRequestsDelay();
       await time.increase(delay);
 
-      // Step 1: processPendingRedeems (lock in ratio BEFORE new mints)
+      // Step 1: snapshot ratio, then processPendingRedeems
+      await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(1);
 
       // After processPendingRedeems, effectiveTotal shrinks — mgtFee weight increases, ratio drops

@@ -455,6 +455,7 @@ describe('Express - Comprehensive Tests', function () {
         await time.increase(withdrawDelay);
 
         // Should now be able to process
+        await express.connect(operator).snapshotPendingRedeemRatio();
         await expect(express.connect(operator).processPendingRedeems(1)).to.emit(
           express,
           'ProcessPendingRedeem'
@@ -482,6 +483,7 @@ describe('Express - Comprehensive Tests', function () {
 
         const withdrawDelay = await express.convertRedeemRequestsDelay();
         await time.increase(withdrawDelay);
+        await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
         const [, , queuedShareAmount, redeemAssetAmt] = await express.getRedeemQueueInfo(0);
@@ -507,6 +509,7 @@ describe('Express - Comprehensive Tests', function () {
         await time.increase(withdrawDelay);
 
         // Process to withdraw queue
+        await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
         // Check withdraw queue has correct timestamp
@@ -552,6 +555,7 @@ describe('Express - Comprehensive Tests', function () {
 
         const withdrawDelay = await express.convertRedeemRequestsDelay();
         await time.increase(withdrawDelay);
+        await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(0);
 
         const [, , , redeemAssetAmt1] = await express.getRedeemQueueInfo(0);
@@ -572,6 +576,7 @@ describe('Express - Comprehensive Tests', function () {
         // Fast forward and process to final queue
         const withdrawDelay = await express.convertRedeemRequestsDelay();
         await time.increase(withdrawDelay);
+        await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
         return { ...fixture, redeemAmount };
@@ -661,6 +666,7 @@ describe('Express - Comprehensive Tests', function () {
         // Fast forward and process to final queue
         const withdrawDelay = await express.convertRedeemRequestsDelay();
         await time.increase(withdrawDelay);
+        await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(0); // Process all
 
         // Remove liquidity from Express
@@ -715,6 +721,7 @@ describe('Express - Comprehensive Tests', function () {
         // Fast forward and process to final queue
         const withdrawDelay = await express.convertRedeemRequestsDelay();
         await time.increase(withdrawDelay);
+        await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(0);
 
         return { ...fixture, redeemAmount, originalTimestamps: timestamps };
@@ -793,6 +800,7 @@ describe('Express - Comprehensive Tests', function () {
 
         // Items are back in pending queue, but already past T+2 delay (timestamps preserved)
         // Should be able to process immediately
+        await express.connect(operator).snapshotPendingRedeemRatio();
         await expect(express.connect(operator).processPendingRedeems(0)).to.emit(
           express,
           'ProcessPendingRedeem'
@@ -879,6 +887,7 @@ describe('Express - Comprehensive Tests', function () {
         // Move to final redeem queue
         const redeemDelay = await express.convertRedeemRequestsDelay();
         await time.increase(redeemDelay);
+        await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
         // Ban user1
@@ -1216,6 +1225,7 @@ describe('Express - Comprehensive Tests', function () {
       // Move to final withdraw queue
       const withdrawDelay = await express.convertRedeemRequestsDelay();
       await time.increase(withdrawDelay);
+      await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(1);
 
       const circulating = await express.circulatingSupply();
@@ -1244,6 +1254,7 @@ describe('Express - Comprehensive Tests', function () {
 
       const withdrawDelay = await express.convertRedeemRequestsDelay();
       await time.increase(withdrawDelay);
+      await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(1);
       await express.connect(operator).processRedeemQueue(1);
 
@@ -1276,6 +1287,7 @@ describe('Express - Comprehensive Tests', function () {
 
       const withdrawDelay = await express.convertRedeemRequestsDelay();
       await time.increase(withdrawDelay);
+      await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(1);
 
       // Cancel from withdraw queue
@@ -1305,6 +1317,7 @@ describe('Express - Comprehensive Tests', function () {
 
       const withdrawDelay = await express.convertRedeemRequestsDelay();
       await time.increase(withdrawDelay);
+      await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(1);
 
       const circulatingInWithdrawQueue = await express.circulatingSupply();
@@ -1353,6 +1366,7 @@ describe('Express - Comprehensive Tests', function () {
       // Move all to final withdraw queue
       const withdrawDelay = await express.convertRedeemRequestsDelay();
       await time.increase(withdrawDelay);
+      await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(0);
 
       expect(await express.totalRedeemQueueShares()).to.equal(w1 + w2 + w3);
@@ -1433,6 +1447,7 @@ describe('Express - Comprehensive Tests', function () {
 
       const withdrawDelay = await express.convertRedeemRequestsDelay();
       await time.increase(withdrawDelay);
+      await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(1);
 
       const ratioAfter = await express.sharesPerToken();
@@ -1465,6 +1480,7 @@ describe('Express - Comprehensive Tests', function () {
 
       const withdrawDelay = await express.convertRedeemRequestsDelay();
       await time.increase(withdrawDelay);
+      await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(1);
 
       const ratioAfter = await express.sharesPerToken();
@@ -1488,6 +1504,7 @@ describe('Express - Comprehensive Tests', function () {
 
       const withdrawDelay = await express.convertRedeemRequestsDelay();
       await time.increase(withdrawDelay);
+      await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(1);
 
       const totalSupply = await oem.totalSupply();
@@ -1518,6 +1535,7 @@ describe('Express - Comprehensive Tests', function () {
 
       const withdrawDelay = await express.convertRedeemRequestsDelay();
       await time.increase(withdrawDelay);
+      await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(1);
       await express.connect(operator).processRedeemQueue(1);
 
@@ -1570,6 +1588,7 @@ describe('Express - Comprehensive Tests', function () {
 
       const withdrawDelay = await express.convertRedeemRequestsDelay();
       await time.increase(withdrawDelay);
+      await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(1);
 
       // Now updateEpoch — fee should be based on circulating (which excludes withdraw queue)
@@ -1609,6 +1628,7 @@ describe('Express - Comprehensive Tests', function () {
 
       const withdrawDelay = await express.convertRedeemRequestsDelay();
       await time.increase(withdrawDelay);
+      await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(1);
 
       // Epoch 2: with withdraw queue (lower circulating)
@@ -1980,6 +2000,7 @@ describe('Express - Comprehensive Tests', function () {
         const { express, operator } = await setupWithdrawFixture(fixture);
 
         // trimDecimals is 3 from fixture
+        await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
         const [, , , withdrawAssetAmt] = await express.getRedeemQueueInfo(0);
@@ -1992,6 +2013,7 @@ describe('Express - Comprehensive Tests', function () {
         const { express, operator, maintainer } = await setupWithdrawFixture(fixture);
 
         await express.connect(maintainer).updateTrimDecimals(6);
+        await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
         const [, , , withdrawAssetAmt] = await express.getRedeemQueueInfo(0);
@@ -2005,6 +2027,7 @@ describe('Express - Comprehensive Tests', function () {
           await setupWithdrawFixture(fixture);
 
         await express.connect(maintainer).updateTrimDecimals(0);
+        await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
         const [, , , withdrawAssetAmt] = await express.getRedeemQueueInfo(0);
@@ -2115,6 +2138,7 @@ describe('Express - Comprehensive Tests', function () {
         await time.increase(delay + 1n);
 
         // Process pending redeems into final redeem queue
+        await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
         expect(await express.getRedeemQueueLength()).to.be.gt(0);
@@ -2144,6 +2168,7 @@ describe('Express - Comprehensive Tests', function () {
 
         const delay = await express.convertRedeemRequestsDelay();
         await time.increase(delay + 1n);
+        await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
         await express.connect(operator).processRedeemQueue(1);
 
@@ -2184,6 +2209,7 @@ describe('Express - Comprehensive Tests', function () {
         // Cancel redeem — refund should go to escrow since user1 is banned
         const delay = await express.convertRedeemRequestsDelay();
         await time.increase(delay + 1n);
+        await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
         await express.connect(maintainer).cancelRedeem(1);
 
@@ -2285,6 +2311,7 @@ describe('Express - Comprehensive Tests', function () {
 
         const withdrawDelay = await express.convertRedeemRequestsDelay();
         await time.increase(withdrawDelay);
+        await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
         const [, , , redeemAssetAmt] = await express.getRedeemQueueInfo(0);
@@ -2306,6 +2333,7 @@ describe('Express - Comprehensive Tests', function () {
         // Process immediately after delay (no intervening updateEpoch/deposits/cancels)
         const withdrawDelay = await express.convertRedeemRequestsDelay();
         await time.increase(withdrawDelay);
+        await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
         const [, , , redeemAssetAmt, feeAssetAmt] = await express.getRedeemQueueInfo(0);
@@ -2326,6 +2354,7 @@ describe('Express - Comprehensive Tests', function () {
 
         const withdrawDelay = await express.convertRedeemRequestsDelay();
         await time.increase(withdrawDelay);
+        await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
         // redeemAssetAmt should be less than redeemAmount due to dilution
@@ -2360,6 +2389,7 @@ describe('Express - Comprehensive Tests', function () {
 
         const redeemDelay = await express.convertRedeemRequestsDelay();
         await time.increase(redeemDelay);
+        await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
         const [, , queuedShareAmount, redeemAssetAmt] = await express.getRedeemQueueInfo(0);
@@ -2378,6 +2408,7 @@ describe('Express - Comprehensive Tests', function () {
 
         const withdrawDelay = await express.convertRedeemRequestsDelay();
         await time.increase(withdrawDelay);
+        await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
         const [, , , redeemAssetAmtFirst] = await express.getRedeemQueueInfo(0);
@@ -2391,6 +2422,7 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(operator).updateEpoch();
 
         // Reprocess — ratio should be recalculated from current state
+        await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
         const [, , , redeemAssetAmtSecond] = await express.getRedeemQueueInfo(0);
@@ -2457,6 +2489,7 @@ describe('Express - Comprehensive Tests', function () {
 
         const redeemDelay = await express.convertRedeemRequestsDelay();
         await time.increase(redeemDelay);
+        await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
         const userBalanceBeforeCancel = await oem.balanceOf(user1.address);
@@ -2497,6 +2530,7 @@ describe('Express - Comprehensive Tests', function () {
 
         const redeemDelay = await express.convertRedeemRequestsDelay();
         await time.increase(redeemDelay);
+        await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
         const [, , , redeemAssetAmtAfterDeposit] = await express.getRedeemQueueInfo(0);

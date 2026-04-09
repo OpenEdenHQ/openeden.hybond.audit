@@ -148,6 +148,10 @@ contract Express is
     // user => asset => amount
     mapping(address => mapping(address => uint256)) public depositEscrowBalance;
 
+    // Snapshotted sharesPerToken ratio for pending redeem entries, keyed by pending redeem ID.
+    // Set by snapshotPendingRedeemRatio() or setSnapshotRatio(). Used by processPendingRedeems().
+    mapping(bytes32 => uint256) public snapshotRatios;
+
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
     //////////////////////////////////////////////////////////////*/
@@ -257,6 +261,10 @@ contract Express is
     event DepositEscrowIn(address indexed account, address indexed asset, uint256 amount);
     // Event for claiming escrowed deposit assets
     event DepositEscrowOut(address indexed account, address indexed asset, uint256 amount);
+    // Event for snapshotting sharesPerToken ratio for pending redeem entries
+    event SnapshotPendingRedeemRatio(uint256 count, uint256 ratio);
+    // Event for manually setting a snapshot ratio for a pending redeem entry
+    event SetSnapshotRatio(bytes32 indexed id, uint256 ratio);
 
     /*//////////////////////////////////////////////////////////////
                                  ERRORS
@@ -280,6 +288,7 @@ contract Express is
     error UseRequestDeposit();
     error UseRequestRedeem();
     error QueuesNotEmpty();
+    error RatioNotSnapshotted(bytes32 id);
 
     /*//////////////////////////////////////////////////////////////
                               CONSTRUCTOR
@@ -560,10 +569,20 @@ contract Express is
     ) public view returns (uint256 netAmt, uint256 feeAmt, uint256 netMintAmt) {
         feeAmt = txsFee(_amount, TxType.DEPOSIT);
         netAmt = _amount - feeAmt;
-        uint256 amt = convertFromUnderlying(_asset, netAmt);
+        netMintAmt = _calculateMintAmount(_asset, netAmt);
+    }
 
+    /**
+     * @notice Calculate token mint amount from net asset amount
+     * @param _asset Asset token address
+     * @param _netAssets Net asset amount (after fees)
+     * @return mintAmount Token amount to mint
+     */
+    function _calculateMintAmount(address _asset, uint256 _netAssets) internal view returns (uint256 mintAmount) {
+        uint256 amount = convertFromUnderlying(_asset, _netAssets);
         uint256 price = getPrice();
-        netMintAmt = _trim(Math.mulDiv(amt, 1e18, price));
+        uint256 tokenPrice = Math.mulDiv(price, _sharesPerToken(), 1e18);
+        mintAmount = _trim(Math.mulDiv(amount, 1e18, tokenPrice));
     }
 
     /**
@@ -633,10 +652,7 @@ contract Express is
                 ++count;
             }
 
-            uint256 amount = convertFromUnderlying(asset, netAssets);
-            uint256 price = getPrice();
-            uint256 mintedAmount = _trim(Math.mulDiv(amount, 1e18, price));
-
+            uint256 mintedAmount = _calculateMintAmount(asset, netAssets);
             token.mint(receiver, mintedAmount);
 
             emit ProcessDeposit(asset, sender, receiver, netAssets, mintedAmount, feeAmt, prevId);
@@ -783,17 +799,16 @@ contract Express is
 
     /**
      * @notice Process pending redeems that have reached convertRedeemRequestsDelay
-     * @dev Applies current price to eligible pending requests and moves to final queue
+     * @dev Uses snapshotted ratio from snapshotPendingRedeemRatio(). Reverts if ratio not set.
      * @param _len Number of pending requests to process (0 = all eligible)
      */
     function processPendingRedeems(uint256 _len) external onlyRole(OPERATOR_ROLE) {
         uint256 maxToProcess = _validateQueueProcessing(pendingRedeemQueue.length(), _len);
         uint256 processed;
         uint256 currentPrice = getPrice();
-        uint256 currentRatio = _sharesPerToken();
 
         while (processed < maxToProcess && !pendingRedeemQueue.empty()) {
-            if (!_processSinglePendingRedeem(currentPrice, currentRatio)) {
+            if (!_processSinglePendingRedeem(currentPrice)) {
                 break;
             }
             unchecked {
@@ -807,10 +822,9 @@ contract Express is
     /**
      * @notice Internal helper to process a single pending redeem
      * @param currentPrice The current T+2 price to apply
-     * @param currentRatio The current T+2 shares-per-token ratio to apply to this batch
      * @return success True if redeem was processed, false if not ready yet
      */
-    function _processSinglePendingRedeem(uint256 currentPrice, uint256 currentRatio) internal returns (bool success) {
+    function _processSinglePendingRedeem(uint256 currentPrice) internal returns (bool success) {
         bytes memory data = pendingRedeemQueue.front();
         (
             address sender,
@@ -825,13 +839,17 @@ contract Express is
             return false;
         }
 
+        // Ratio must be snapshotted before processing
+        uint256 currentRatio = snapshotRatios[pendingId];
+        if (currentRatio == 0) revert RatioNotSnapshotted(pendingId);
+
         _validateKyc(sender, receiver);
 
-        // Remove from pending queue
+        // Remove from pending queue and migrate snapshot to final ID
         pendingRedeemQueue.popFront();
         pendingRedeemInfo[receiver] -= shareAmount;
 
-        // Price redeem proceeds from the batch ratio chosen by the operator's processing time.
+        // Price redeem proceeds using the snapshotted ratio
         uint256 redeemAssetAmt = _redeemAssetAmount(shareAmount, currentRatio, currentPrice);
 
         // Calculate fee in redeemAsset (not in token!)
@@ -854,6 +872,10 @@ contract Express is
         redeemQueue.pushBack(
             abi.encode(sender, receiver, shareAmount, redeemAssetAmt, feeAssetAmt, requestTimestamp, finalId)
         );
+
+        // Migrate ratio from pending ID to final ID (for revertRedeemToPending), then clean up
+        snapshotRatios[finalId] = currentRatio;
+        delete snapshotRatios[pendingId];
 
         redeemInfo[receiver] += shareAmount;
         totalRedeemQueueShares += shareAmount;
@@ -895,9 +917,52 @@ contract Express is
             }
 
             _refundOrEscrow(sender, shareAmount);
+            delete snapshotRatios[id];
 
             emit CancelPendingRedeem(sender, receiver, shareAmount, id);
         }
+    }
+
+    /**
+     * @notice Snapshot current sharesPerToken ratio into all pending redeem entries that have no ratio yet
+     * @dev Called daily at 4pm SGT after the daily batch (processPendingRedeems, processDepositQueue, updateEpoch)
+     */
+    function snapshotPendingRedeemRatio() external onlyRole(OPERATOR_ROLE) {
+        uint256 queueLen = pendingRedeemQueue.length();
+        if (queueLen == 0) revert EmptyQueue();
+
+        uint256 currentRatio = _sharesPerToken();
+        uint256 updated;
+
+        for (uint256 i = 0; i < queueLen; ) {
+            bytes memory data = pendingRedeemQueue.at(i);
+            (, , , , bytes32 id) = _decodePendingRedeemData(data);
+
+            if (snapshotRatios[id] == 0) {
+                snapshotRatios[id] = currentRatio;
+                unchecked {
+                    ++updated;
+                }
+            }
+
+            unchecked {
+                ++i;
+            }
+        }
+
+        emit SnapshotPendingRedeemRatio(updated, currentRatio);
+    }
+
+    /**
+     * @notice Manually set snapshot ratio for a pending redeem entry
+     * @dev Fallback for failed auto-snapshots or corrections. Overwrites any existing value.
+     * @param _id Pending redeem ID
+     * @param _ratio Shares-per-token ratio in 1e18 precision
+     */
+    function setSnapshotRatio(bytes32 _id, uint256 _ratio) external onlyRole(MAINTAINER_ROLE) {
+        if (_ratio == 0 || _ratio > 1e18) revert InvalidInput(_ratio);
+        snapshotRatios[_id] = _ratio;
+        emit SetSnapshotRatio(_id, _ratio);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -936,6 +1001,7 @@ contract Express is
             redeemQueue.popFront();
             redeemInfo[receiver] -= shareAmount;
             totalRedeemQueueShares -= shareAmount;
+            delete snapshotRatios[id];
             unchecked {
                 ++count;
             }
@@ -981,6 +1047,7 @@ contract Express is
 
             redeemInfo[receiver] -= shareAmount;
             totalRedeemQueueShares -= shareAmount;
+            delete snapshotRatios[id];
 
             unchecked {
                 --_len;
@@ -1070,6 +1137,13 @@ contract Express is
 
             // Update pendingRedeemInfo
             pendingRedeemInfo[receiver] += shareAmount;
+
+            // Restore snapshot ratio from final ID to new pending ID, then clean up
+            uint256 oldRatio = snapshotRatios[oldId];
+            if (oldRatio != 0) {
+                snapshotRatios[newPendingId] = oldRatio;
+                delete snapshotRatios[oldId];
+            }
 
             emit RevertRedeemToPending(sender, receiver, shareAmount, oldId, newPendingId);
 
