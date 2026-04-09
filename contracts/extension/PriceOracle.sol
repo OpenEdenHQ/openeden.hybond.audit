@@ -129,7 +129,9 @@ contract PriceOracle is Initializable, AccessControlEnumerableUpgradeable, UUPSU
         return latestRoundValue;
     }
 
-    function getRoundData(uint80 _roundId)
+    function getRoundData(
+        uint80 _roundId
+    )
         public
         view
         returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)

@@ -1371,7 +1371,9 @@ describe('Express - Comprehensive Tests', function () {
         await loadFixture(deployFixture);
 
       const depositAmount = ethers.parseUnits('5000', 18);
-      await express.connect(user1).requestDeposit(await usdo.getAddress(), depositAmount, user1.address);
+      await express
+        .connect(user1)
+        .requestDeposit(await usdo.getAddress(), depositAmount, user1.address);
       await express.connect(maintainer).processDepositQueue(1);
 
       const BURNER_ROLE = await oem.BURNER_ROLE();
@@ -1414,7 +1416,7 @@ describe('Express - Comprehensive Tests', function () {
       }
     });
 
-    it('should decrease when tokens are in withdraw queue', async function () {
+    it('should NOT decrease when tokens are in withdraw queue (no mgt fee)', async function () {
       const { express, oem, user1, usdo, maintainer, operator } = await loadFixture(deployFixture);
 
       // Deposit
@@ -1435,7 +1437,39 @@ describe('Express - Comprehensive Tests', function () {
 
       const ratioAfter = await express.sharesPerToken();
 
-      // Ratio should decrease since circulating < totalSupply
+      // Ratio stays 1:1 — redeem queue tokens cancel out of both numerator and denominator
+      expect(ratioAfter).to.equal(ratioBefore);
+    });
+
+    it('should decrease when tokens are in withdraw queue WITH mgt fee', async function () {
+      const { express, oem, user1, usdo, maintainer, operator } = await loadFixture(deployFixture);
+
+      // Deposit
+      const amount = ethers.parseUnits('100000', 18);
+      await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
+      await express.connect(maintainer).processDepositQueue(1);
+
+      // Set mgt fee so mgtFeeTo has a balance
+      await express.connect(maintainer).updateMgtFeeRate(300);
+      const timeBuffer = await express.timeBuffer();
+      await time.increase(timeBuffer);
+      await express.connect(operator).updateEpoch();
+
+      const ratioBefore = await express.sharesPerToken();
+      expect(ratioBefore).to.be.lt(ethers.parseUnits('1', 18));
+
+      // Request withdraw and move to final queue
+      const withdrawAmount = ethers.parseUnits('20000', 18);
+      await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
+      await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
+
+      const withdrawDelay = await express.convertRedeemRequestsDelay();
+      await time.increase(withdrawDelay);
+      await express.connect(operator).processPendingRedeems(1);
+
+      const ratioAfter = await express.sharesPerToken();
+
+      // Ratio decreases further — mgtFeeTo balance is a larger fraction of the smaller effectiveTotal
       expect(ratioAfter).to.be.lt(ratioBefore);
     });
 
@@ -1457,11 +1491,15 @@ describe('Express - Comprehensive Tests', function () {
       await express.connect(operator).processPendingRedeems(1);
 
       const totalSupply = await oem.totalSupply();
-      const circulating = await express.circulatingSupply();
+      const totalRedeemQueueShares = await express.totalRedeemQueueShares();
+      const effectiveTotal = totalSupply - totalRedeemQueueShares;
+      const mgtFeeTo = await express.mgtFeeTo();
+      const tokensAtMgtFeeTo = await oem.balanceOf(mgtFeeTo);
       const ratio = await express.sharesPerToken();
 
-      // ratio = circulating * 1e18 / totalSupply
-      const expectedRatio = (circulating * ethers.parseUnits('1', 18)) / totalSupply;
+      // ratio = (effectiveTotal - tokensAtMgtFeeTo) * 1e18 / effectiveTotal
+      const expectedRatio =
+        ((effectiveTotal - tokensAtMgtFeeTo) * ethers.parseUnits('1', 18)) / effectiveTotal;
       expect(ratio).to.equal(expectedRatio);
     });
 

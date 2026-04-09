@@ -1465,7 +1465,12 @@ contract Express is
     function _sharesPerToken() internal view returns (uint256 ratio) {
         uint256 totalSupply = IERC20(address(token)).totalSupply();
         if (totalSupply == 0) return 1e18;
-        ratio = Math.mulDiv(circulatingSupply(), 1e18, totalSupply);
+
+        uint256 effectiveTotal = totalSupply - totalRedeemQueueShares;
+        if (effectiveTotal == 0) return 1e18;
+
+        uint256 tokensAtMgtFeeTo = mgtFeeTo != address(0) ? IERC20(address(token)).balanceOf(mgtFeeTo) : 0;
+        ratio = Math.mulDiv(effectiveTotal - tokensAtMgtFeeTo, 1e18, effectiveTotal);
     }
 
     /**

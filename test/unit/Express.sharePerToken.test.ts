@@ -23,22 +23,14 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
   }
 
   // Helper: deposit USDC for a user and process the deposit queue
-  async function depositFor(
-    fixture: any,
-    user: any,
-    amount: bigint
-  ) {
+  async function depositFor(fixture: any, user: any, amount: bigint) {
     const { express, usdo, maintainer } = fixture;
     await express.connect(user).requestDeposit(await usdo.getAddress(), amount, user.address);
     await express.connect(maintainer).processDepositQueue(1);
   }
 
   // Helper: request redeem and move to pending queue
-  async function requestRedeemFor(
-    fixture: any,
-    user: any,
-    amount: bigint
-  ) {
+  async function requestRedeemFor(fixture: any, user: any, amount: bigint) {
     const { express, oem } = fixture;
     await oem.connect(user).approve(await express.getAddress(), ethers.MaxUint256);
     await express.connect(user).requestRedeem(user.address, amount);
@@ -201,7 +193,9 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
       const balanceBefore = await oem.balanceOf(user1.address);
 
       await requestRedeemFor(fixture, user1, ethers.parseUnits('1000', 18));
-      expect(await oem.balanceOf(user1.address)).to.equal(balanceBefore - ethers.parseUnits('1000', 18));
+      expect(await oem.balanceOf(user1.address)).to.equal(
+        balanceBefore - ethers.parseUnits('1000', 18)
+      );
 
       await express.connect(maintainer).cancelPendingRedeem(1);
       expect(await oem.balanceOf(user1.address)).to.equal(balanceBefore);
@@ -244,8 +238,12 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
       await express.connect(maintainer).cancelPendingRedeem(0);
 
       expect(await express.getPendingRedeemQueueLength()).to.equal(0n);
-      expect(await oem.balanceOf(user1.address)).to.equal(user1BalBefore + ethers.parseUnits('1000', 18));
-      expect(await oem.balanceOf(user2.address)).to.equal(user2BalBefore + ethers.parseUnits('2000', 18));
+      expect(await oem.balanceOf(user1.address)).to.equal(
+        user1BalBefore + ethers.parseUnits('1000', 18)
+      );
+      expect(await oem.balanceOf(user2.address)).to.equal(
+        user2BalBefore + ethers.parseUnits('2000', 18)
+      );
     });
   });
 
@@ -266,7 +264,9 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
 
       // user2 requests deposit 50000 (large deposit)
       const depositAmount = ethers.parseUnits('50000', 18);
-      await express.connect(user2).requestDeposit(await usdo.getAddress(), depositAmount, user2.address);
+      await express
+        .connect(user2)
+        .requestDeposit(await usdo.getAddress(), depositAmount, user2.address);
 
       // Advance past T+2
       const delay = await express.convertRedeemRequestsDelay();
@@ -299,7 +299,9 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
       await requestRedeemFor(fixture, user1, ethers.parseUnits('1000', 18));
 
       const depositAmount = ethers.parseUnits('50000', 18);
-      await express.connect(user2).requestDeposit(await usdo.getAddress(), depositAmount, user2.address);
+      await express
+        .connect(user2)
+        .requestDeposit(await usdo.getAddress(), depositAmount, user2.address);
 
       const delay = await express.convertRedeemRequestsDelay();
       await time.increase(delay);
@@ -325,11 +327,9 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
 
       // user1 requests redeem, user2 queues a large deposit
       await requestRedeemFor(fixture, user1, ethers.parseUnits('1000', 18));
-      await express.connect(user2).requestDeposit(
-        await usdo.getAddress(),
-        ethers.parseUnits('50000', 18),
-        user2.address
-      );
+      await express
+        .connect(user2)
+        .requestDeposit(await usdo.getAddress(), ethers.parseUnits('50000', 18), user2.address);
 
       const delay = await express.convertRedeemRequestsDelay();
       await time.increase(delay);
@@ -354,11 +354,9 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
       await depositFor(fixture, user1, ethers.parseUnits('10000', 18));
       await requestRedeemFor(fixture, user1, ethers.parseUnits('1000', 18));
 
-      await express.connect(user2).requestDeposit(
-        await usdo.getAddress(),
-        ethers.parseUnits('5000', 18),
-        user2.address
-      );
+      await express
+        .connect(user2)
+        .requestDeposit(await usdo.getAddress(), ethers.parseUnits('5000', 18), user2.address);
 
       const delay = await express.convertRedeemRequestsDelay();
       await time.increase(delay);
@@ -635,11 +633,9 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
 
       // T+0: user1 requests redeem, user2 requests deposit
       await requestRedeemFor(fixture, user1, ethers.parseUnits('5000', 18));
-      await express.connect(user2).requestDeposit(
-        await usdo.getAddress(),
-        ethers.parseUnits('30000', 18),
-        user2.address
-      );
+      await express
+        .connect(user2)
+        .requestDeposit(await usdo.getAddress(), ethers.parseUnits('30000', 18), user2.address);
 
       // T+2: Execute in SOP order
       const delay = await express.convertRedeemRequestsDelay();
@@ -648,14 +644,14 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
       // Step 1: processPendingRedeems (lock in ratio BEFORE new mints)
       await express.connect(operator).processPendingRedeems(1);
 
-      // After processPendingRedeems, tokens moved to redeemQueue — ratio drops
+      // After processPendingRedeems, effectiveTotal shrinks — mgtFee weight increases, ratio drops
       const ratioAfterPendingRedeem = await express.sharesPerToken();
 
       // Step 2: processDepositQueue (mint new tokens)
       await express.connect(maintainer).processDepositQueue(1);
       const ratioAfterDeposit = await express.sharesPerToken();
 
-      // Ratio goes back up after deposit (new circulating tokens dilute the dead weight)
+      // Ratio goes back up after deposit (effectiveTotal grows, mgtFee fraction shrinks)
       expect(ratioAfterDeposit).to.be.gt(ratioAfterPendingRedeem);
 
       // Step 3: updateEpoch (accrue fee on correct circulating including new deposits)
