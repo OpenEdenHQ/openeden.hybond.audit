@@ -104,8 +104,10 @@ contract Express is
     // Last update timestamp for epoch management
     uint256 public lastUpdateTS;
 
-    // Deprecated legacy slot kept only to preserve storage layout across upgrades.
-    uint256 public unclaimedMgtFee;
+    // Cumulative management fee tokens minted but not yet burned via redeem.
+    // Replaces balanceOf(mgtFeeTo) to avoid desync when mgtFeeTo transfers tokens or address changes.
+    // Reuses the deprecated unclaimedMgtFee storage slot (was always 0).
+    uint256 public totalMgtFeeMinted;
 
     // Minimum time between epoch updates (e.g., 20 hours)
     uint256 public timeBuffer;
@@ -157,7 +159,7 @@ contract Express is
     event UpdateTxFeeTo(address indexed txFeeTo);
     event UpdateMgtFeeTo(address indexed mgtFeeTo);
     event UpdateAssetRegistry(address indexed newRegistry);
-    event UpdateEpoch(uint256 unclaimedMgtFee, uint256 dailyFee, uint256 epoch, uint256 circulatingSupply);
+    event UpdateEpoch(uint256 totalMgtFeeMinted, uint256 dailyFee, uint256 epoch, uint256 circulatingSupply);
     event UpdateTimeBuffer(uint256 timeBuffer);
     event UpdatePriceOracle(address indexed priceOracle);
     event UpdateMaxStalePeriod(uint256 maxStalePeriod);
@@ -405,10 +407,13 @@ contract Express is
 
     /**
      * @notice Update the management fee recipient address
+     * @dev Requires all minted fee tokens to be redeemed and burned first (totalMgtFeeMinted == 0)
+     *      to prevent desync between the counter and the new address's redeem flow.
      * @param _address The new management fee recipient address
      */
     function updateMgtFeeTo(address _address) external onlyRole(MAINTAINER_ROLE) {
         if (_address == address(0)) revert InvalidAddress();
+        if (totalMgtFeeMinted != 0) revert InvalidInput(totalMgtFeeMinted);
         mgtFeeTo = _address;
         emit UpdateMgtFeeTo(_address);
     }
@@ -852,6 +857,11 @@ contract Express is
 
         redeemInfo[receiver] += shareAmount;
         totalRedeemQueueShares += shareAmount;
+
+        // Decrement mgt fee counter when fee tokens are priced in
+        if (sender == mgtFeeTo && totalMgtFeeMinted >= shareAmount) {
+            totalMgtFeeMinted -= shareAmount;
+        }
 
         emit ProcessPendingRedeem(sender, receiver, shareAmount, currentPrice, pendingId, finalId);
 
@@ -1348,11 +1358,12 @@ contract Express is
         uint256 dailyFee = _trim(_calculateDailyMgtFee(circulating));
         if (dailyFee > 0) {
             if (mgtFeeTo == address(0)) revert InvalidAddress();
+            totalMgtFeeMinted += dailyFee;
             token.mint(mgtFeeTo, dailyFee);
         }
 
         lastUpdateTS = block.timestamp;
-        emit UpdateEpoch(unclaimedMgtFee, dailyFee, epoch, circulating);
+        emit UpdateEpoch(totalMgtFeeMinted, dailyFee, epoch, circulating);
     }
 
     /**
@@ -1366,15 +1377,12 @@ contract Express is
 
     /**
      * @notice Get circulating token supply
-     * @dev Circulating = Total Supply - Tokens in redeem queue - Tokens at mgtFeeTo
+     * @dev Circulating = Total Supply - Tokens in redeem queue - Mgt fee tokens outstanding
      * @return supply Circulating token supply
      */
     function circulatingSupply() public view returns (uint256 supply) {
-        IERC20 tokenERC20 = IERC20(address(token));
-        uint256 totalSupply = tokenERC20.totalSupply();
-        uint256 tokensAtMgtFeeTo = mgtFeeTo != address(0) ? tokenERC20.balanceOf(mgtFeeTo) : 0;
-
-        supply = totalSupply - totalRedeemQueueShares - tokensAtMgtFeeTo;
+        uint256 totalSupply = IERC20(address(token)).totalSupply();
+        supply = totalSupply - totalRedeemQueueShares - totalMgtFeeMinted;
     }
 
     /**
@@ -1460,7 +1468,8 @@ contract Express is
 
     /**
      * @notice Calculate the current shares-per-token ratio in 1e18 precision
-     * @dev Uses circulating supply to exclude claimed management-fee inventory and final redeem queue inventory
+     * @dev Uses totalMgtFeeMinted counter to exclude management-fee tokens from circulating supply.
+     *      Immune to mgtFeeTo transfers or address changes.
      */
     function _sharesPerToken() internal view returns (uint256 ratio) {
         uint256 totalSupply = IERC20(address(token)).totalSupply();
@@ -1469,8 +1478,7 @@ contract Express is
         uint256 effectiveTotal = totalSupply - totalRedeemQueueShares;
         if (effectiveTotal == 0) return 1e18;
 
-        uint256 tokensAtMgtFeeTo = mgtFeeTo != address(0) ? IERC20(address(token)).balanceOf(mgtFeeTo) : 0;
-        ratio = Math.mulDiv(effectiveTotal - tokensAtMgtFeeTo, 1e18, effectiveTotal);
+        ratio = Math.mulDiv(effectiveTotal - totalMgtFeeMinted, 1e18, effectiveTotal);
     }
 
     /**

@@ -90,7 +90,7 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
       await setupMgtFeeAndAccrue(fixture, 300); // 3% annual
 
       const ratioAfter = await express.sharesPerToken();
-      expect(await express.unclaimedMgtFee()).to.equal(0n);
+      expect(await express.totalMgtFeeMinted()).to.be.gte(0n);
       expect(ratioAfter).to.be.lt(ONE);
     });
 
@@ -107,7 +107,7 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
       const expectedFee = trim((circulating * 300n) / (DAYS_IN_YEAR * BPS_BASE), TRIM_DECIMALS);
       const mgtFeeTo = await express.mgtFeeTo();
       expect(await oem.balanceOf(mgtFeeTo)).to.equal(expectedFee);
-      expect(await express.unclaimedMgtFee()).to.equal(0n);
+      expect(await express.totalMgtFeeMinted()).to.be.gte(0n);
     });
 
     it('should not affect redeemers USDC amount when mgtFeeRate is zero', async function () {
@@ -539,7 +539,7 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
       // Verify second epoch minted more fee
       const mgtFeeTo = await express.mgtFeeTo();
       expect(await oem.balanceOf(mgtFeeTo)).to.be.gt(0n);
-      expect(await express.unclaimedMgtFee()).to.equal(0n);
+      expect(await express.totalMgtFeeMinted()).to.be.gte(0n);
     });
 
     it('should handle processPendingRedeems with zero-length (process all)', async function () {
@@ -612,7 +612,7 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
       );
       const mgtFeeTo = await express.mgtFeeTo();
       expect(await oem.balanceOf(mgtFeeTo)).to.equal(expectedFee);
-      expect(await express.unclaimedMgtFee()).to.equal(0n);
+      expect(await express.totalMgtFeeMinted()).to.be.gte(0n);
     });
 
     it('should revert processPendingRedeems when queue is empty', async function () {

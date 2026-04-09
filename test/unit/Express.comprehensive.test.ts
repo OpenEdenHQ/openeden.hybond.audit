@@ -1033,7 +1033,7 @@ describe('Express - Comprehensive Tests', function () {
 
       const mgtFeeTo = await express.mgtFeeTo();
       expect(await oem.balanceOf(mgtFeeTo)).to.be.gt(0);
-      expect(await express.unclaimedMgtFee()).to.equal(0);
+      expect(await express.totalMgtFeeMinted()).to.equal(await oem.balanceOf(mgtFeeTo));
     });
 
     it('should revert if updating epoch too early', async function () {
@@ -1069,7 +1069,7 @@ describe('Express - Comprehensive Tests', function () {
       );
     });
 
-    it('should leave unclaimedMgtFee unused in the daily mint flow', async function () {
+    it('should track totalMgtFeeMinted correctly in the daily mint flow', async function () {
       const { express, operator, maintainer, oem, user1, usdo } = await loadFixture(deployFixture);
 
       // Setup tokens and fees
@@ -1089,7 +1089,7 @@ describe('Express - Comprehensive Tests', function () {
 
       const balanceAfter = await oem.balanceOf(mgtFeeTo);
       expect(balanceAfter).to.be.gt(balanceBefore);
-      expect(await express.unclaimedMgtFee()).to.equal(0);
+      expect(await express.totalMgtFeeMinted()).to.equal(balanceAfter);
     });
   });
 
@@ -1582,7 +1582,7 @@ describe('Express - Comprehensive Tests', function () {
       const expectedFee = trim((circulating * 300n) / (365n * 10000n), TRIM_DECIMALS);
       const mgtFeeTo = await express.mgtFeeTo();
       expect(await oem.balanceOf(mgtFeeTo)).to.equal(expectedFee);
-      expect(await express.unclaimedMgtFee()).to.equal(0);
+      expect(await express.totalMgtFeeMinted()).to.equal(expectedFee);
     });
 
     it('should accrue higher fee when no tokens in withdraw queue', async function () {
@@ -1632,7 +1632,7 @@ describe('Express - Comprehensive Tests', function () {
       await time.increase(timeBuffer);
       await express.connect(operator).updateEpoch();
 
-      expect(await express.unclaimedMgtFee()).to.equal(0);
+      expect(await express.totalMgtFeeMinted()).to.equal(0);
       expect(await oem.totalSupply()).to.equal(0);
     });
 
@@ -1657,8 +1657,9 @@ describe('Express - Comprehensive Tests', function () {
       const mgtFeeTo = await express.mgtFeeTo();
       const mgtFeeToBalance = await oem.balanceOf(mgtFeeTo);
 
-      // Pending tokens are NOT excluded, so circulating = totalSupply - mgtFeeToBalance
-      expect(circulating).to.equal(totalSupply - mgtFeeToBalance);
+      // Pending tokens are NOT excluded, so circulating = totalSupply - totalMgtFeeMinted
+      const totalMgtFeeMinted = await express.totalMgtFeeMinted();
+      expect(circulating).to.equal(totalSupply - totalMgtFeeMinted);
 
       // updateEpoch fee should be based on this full circulating amount
       const timeBuffer = await express.timeBuffer();
@@ -1668,7 +1669,7 @@ describe('Express - Comprehensive Tests', function () {
       const expectedFee = trim((circulating * 300n) / (365n * 10000n), TRIM_DECIMALS);
       const feeMintedToday = await oem.balanceOf(mgtFeeTo);
       expect(feeMintedToday).to.equal(expectedFee);
-      expect(await express.unclaimedMgtFee()).to.equal(0);
+      expect(await express.totalMgtFeeMinted()).to.equal(expectedFee);
     });
 
     it('should use override circulating supply when provided', async function () {
@@ -1690,7 +1691,7 @@ describe('Express - Comprehensive Tests', function () {
       const expectedFee = trim((overrideSupply * 300n) / (365n * 10000n), TRIM_DECIMALS);
       const mgtFeeTo = await express.mgtFeeTo();
       expect(await oem.balanceOf(mgtFeeTo)).to.equal(expectedFee);
-      expect(await express.unclaimedMgtFee()).to.equal(0);
+      expect(await express.totalMgtFeeMinted()).to.equal(expectedFee);
     });
 
     it('should revert when override exceeds total supply', async function () {
@@ -1736,7 +1737,7 @@ describe('Express - Comprehensive Tests', function () {
       const expectedFee = trim((totalSupply * 300n) / (365n * 10000n), TRIM_DECIMALS);
       const mgtFeeTo = await express.mgtFeeTo();
       expect(await oem.balanceOf(mgtFeeTo)).to.equal(expectedFee);
-      expect(await express.unclaimedMgtFee()).to.equal(0);
+      expect(await express.totalMgtFeeMinted()).to.equal(expectedFee);
     });
 
     it('should produce different fees for override vs on-chain calculation', async function () {
@@ -1917,7 +1918,7 @@ describe('Express - Comprehensive Tests', function () {
         // Last 15 digits should be zero (trimmed to 3 decimals)
         expect(fee % 10n ** 15n).to.equal(0);
         expect(fee).to.be.gt(0);
-        expect(await express.unclaimedMgtFee()).to.equal(0);
+        expect(await express.totalMgtFeeMinted()).to.equal(fee);
       });
 
       it('should produce different fee precision with different trimDecimals', async function () {
@@ -1951,7 +1952,7 @@ describe('Express - Comprehensive Tests', function () {
         const trim6Factor = 10n ** 12n;
         expect(fee3 % trim3Factor).to.equal(0n);
         expect(fee6 % trim6Factor).to.equal(0n);
-        expect(await express.unclaimedMgtFee()).to.equal(0);
+        expect(await express.totalMgtFeeMinted()).to.equal(totalFee);
       });
     });
 
