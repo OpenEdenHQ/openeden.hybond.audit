@@ -106,6 +106,7 @@ describe('AssetRegistry', function () {
           priceFeed: ethers.ZeroAddress,
           maxStalePeriod: 0,
           isSupported: true,
+          isRedeemable: true,
         };
 
         // First call should emit AssetAdded
@@ -142,6 +143,7 @@ describe('AssetRegistry', function () {
           priceFeed: await priceFeed.getAddress(),
           maxStalePeriod: 3600, // 1 hour
           isSupported: true,
+          isRedeemable: true,
         };
 
         await expect(assetRegistry.connect(deployer).setAssetConfig(config)).to.emit(
@@ -160,6 +162,7 @@ describe('AssetRegistry', function () {
           priceFeed: ethers.ZeroAddress,
           maxStalePeriod: 0,
           isSupported: true,
+          isRedeemable: true,
         };
 
         const config2 = {
@@ -167,6 +170,7 @@ describe('AssetRegistry', function () {
           priceFeed: ethers.ZeroAddress,
           maxStalePeriod: 0,
           isSupported: true,
+          isRedeemable: true,
         };
 
         await assetRegistry.connect(deployer).setAssetConfig(config1);
@@ -186,6 +190,7 @@ describe('AssetRegistry', function () {
           priceFeed: ethers.ZeroAddress,
           maxStalePeriod: 0,
           isSupported: true,
+          isRedeemable: true,
         };
 
         await expect(
@@ -201,6 +206,7 @@ describe('AssetRegistry', function () {
           priceFeed: deployer.address, // Non-zero price feed
           maxStalePeriod: 0, // Invalid: should be > 0 when price feed is set
           isSupported: true,
+          isRedeemable: true,
         };
 
         await expect(
@@ -216,6 +222,7 @@ describe('AssetRegistry', function () {
           priceFeed: ethers.ZeroAddress,
           maxStalePeriod: 0,
           isSupported: true,
+          isRedeemable: true,
         };
 
         await expect(
@@ -231,6 +238,7 @@ describe('AssetRegistry', function () {
           priceFeed: ethers.ZeroAddress,
           maxStalePeriod: 0,
           isSupported: false,
+          isRedeemable: true,
         };
 
         await expect(
@@ -249,6 +257,7 @@ describe('AssetRegistry', function () {
           priceFeed: ethers.ZeroAddress,
           maxStalePeriod: 0,
           isSupported: true,
+          isRedeemable: true,
         };
 
         await expect(
@@ -266,6 +275,7 @@ describe('AssetRegistry', function () {
           priceFeed: ethers.ZeroAddress,
           maxStalePeriod: 0,
           isSupported: true,
+          isRedeemable: true,
         };
 
         await assetRegistry.connect(deployer).setAssetConfig(initialConfig);
@@ -280,6 +290,7 @@ describe('AssetRegistry', function () {
           priceFeed: await priceFeed.getAddress(),
           maxStalePeriod: 7200, // 2 hours
           isSupported: true,
+          isRedeemable: true,
         };
 
         await expect(assetRegistry.connect(deployer).setAssetConfig(updatedConfig))
@@ -287,6 +298,7 @@ describe('AssetRegistry', function () {
           .withArgs(await usdo.getAddress(), [
             await usdo.getAddress(),
             updatedConfig.isSupported,
+            updatedConfig.isRedeemable,
             await priceFeed.getAddress(),
             updatedConfig.maxStalePeriod,
           ]);
@@ -304,6 +316,7 @@ describe('AssetRegistry', function () {
           priceFeed: ethers.ZeroAddress,
           maxStalePeriod: 0,
           isSupported: true,
+          isRedeemable: true,
         };
 
         await assetRegistry.connect(deployer).setAssetConfig(config);
@@ -323,6 +336,7 @@ describe('AssetRegistry', function () {
           priceFeed: ethers.ZeroAddress,
           maxStalePeriod: 0,
           isSupported: true,
+          isRedeemable: true,
         };
 
         await assetRegistry.connect(deployer).setAssetConfig(config);
@@ -355,18 +369,21 @@ describe('AssetRegistry', function () {
             priceFeed: ethers.ZeroAddress,
             maxStalePeriod: 0,
             isSupported: true,
+            isRedeemable: true,
           },
           {
             asset: await usdc.getAddress(),
             priceFeed: ethers.ZeroAddress,
             maxStalePeriod: 0,
             isSupported: true,
+            isRedeemable: true,
           },
           {
             asset: await wbtc.getAddress(),
             priceFeed: ethers.ZeroAddress,
             maxStalePeriod: 0,
             isSupported: true,
+            isRedeemable: true,
           },
         ];
 
@@ -392,6 +409,7 @@ describe('AssetRegistry', function () {
           priceFeed: ethers.ZeroAddress,
           maxStalePeriod: 0,
           isSupported: true,
+          isRedeemable: true,
         };
 
         await assetRegistry.connect(deployer).setAssetConfig(config);
@@ -413,6 +431,7 @@ describe('AssetRegistry', function () {
           priceFeed: ethers.ZeroAddress,
           maxStalePeriod: 0,
           isSupported: true,
+          isRedeemable: true,
         };
 
         await assetRegistry.connect(deployer).setAssetConfig(config);
@@ -434,6 +453,7 @@ describe('AssetRegistry', function () {
           priceFeed: ethers.ZeroAddress,
           maxStalePeriod: 0,
           isSupported: true,
+          isRedeemable: true,
         };
 
         await assetRegistry.connect(deployer).setAssetConfig(config);
@@ -455,6 +475,7 @@ describe('AssetRegistry', function () {
           priceFeed: ethers.ZeroAddress,
           maxStalePeriod: 0,
           isSupported: true,
+          isRedeemable: true,
         };
 
         await assetRegistry.connect(deployer).setAssetConfig(config);
@@ -476,6 +497,7 @@ describe('AssetRegistry', function () {
           priceFeed: ethers.ZeroAddress,
           maxStalePeriod: 0,
           isSupported: true,
+          isRedeemable: true,
         };
 
         await assetRegistry.connect(deployer).setAssetConfig(config);
@@ -497,6 +519,7 @@ describe('AssetRegistry', function () {
           priceFeed: ethers.ZeroAddress,
           maxStalePeriod: 0,
           isSupported: true,
+          isRedeemable: true,
         };
 
         await assetRegistry.connect(deployer).setAssetConfig(config);
@@ -518,6 +541,7 @@ describe('AssetRegistry', function () {
           priceFeed: ethers.ZeroAddress,
           maxStalePeriod: 0,
           isSupported: true,
+          isRedeemable: true,
         };
 
         await assetRegistry.connect(deployer).setAssetConfig(config);
@@ -539,6 +563,7 @@ describe('AssetRegistry', function () {
           priceFeed: ethers.ZeroAddress,
           maxStalePeriod: 0,
           isSupported: true,
+          isRedeemable: true,
         };
 
         await assetRegistry.connect(deployer).setAssetConfig(config);
@@ -581,6 +606,7 @@ describe('AssetRegistry', function () {
         priceFeed: ethers.ZeroAddress,
         maxStalePeriod: 0,
         isSupported: true,
+        isRedeemable: true,
       };
 
       await assetRegistry.connect(deployer).setAssetConfig(config);
@@ -610,6 +636,7 @@ describe('AssetRegistry', function () {
         priceFeed: ethers.ZeroAddress,
         maxStalePeriod: 0,
         isSupported: true,
+        isRedeemable: true,
       };
 
       await assetRegistry.connect(deployer).setAssetConfig(config);
@@ -627,6 +654,7 @@ describe('AssetRegistry', function () {
         priceFeed: ethers.ZeroAddress,
         maxStalePeriod: 0,
         isSupported: true,
+        isRedeemable: true,
       };
 
       const config2 = {
@@ -634,6 +662,7 @@ describe('AssetRegistry', function () {
         priceFeed: ethers.ZeroAddress,
         maxStalePeriod: 0,
         isSupported: true,
+        isRedeemable: true,
       };
 
       await assetRegistry.connect(deployer).setAssetConfig(config1);
@@ -664,6 +693,7 @@ describe('AssetRegistry', function () {
         priceFeed: ethers.ZeroAddress,
         maxStalePeriod: 0,
         isSupported: true,
+        isRedeemable: true,
       };
 
       await assetRegistry.connect(deployer).setAssetConfig(config);
@@ -699,6 +729,7 @@ describe('AssetRegistry', function () {
         priceFeed: ethers.ZeroAddress,
         maxStalePeriod: 0,
         isSupported: true,
+        isRedeemable: true,
       };
 
       // Add
@@ -729,6 +760,7 @@ describe('AssetRegistry', function () {
           priceFeed: ethers.ZeroAddress,
           maxStalePeriod: 0,
           isSupported: true,
+          isRedeemable: true,
         };
 
         await assetRegistry.connect(deployer).setAssetConfig(config);
@@ -748,6 +780,7 @@ describe('AssetRegistry', function () {
         priceFeed: ethers.ZeroAddress,
         maxStalePeriod: 0,
         isSupported: true,
+        isRedeemable: true,
       };
 
       await expect(
@@ -767,6 +800,7 @@ describe('AssetRegistry', function () {
         priceFeed: ethers.ZeroAddress,
         maxStalePeriod: 0,
         isSupported: true,
+        isRedeemable: true,
       };
 
       await expect(assetRegistry.connect(newOwner).setAssetConfig(config)).to.emit(

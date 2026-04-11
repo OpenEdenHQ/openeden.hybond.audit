@@ -5,6 +5,7 @@ export interface ExpressDeployment {
   oem: any;
   usdo: any;
   express: any;
+  expressLib: any;
   assetRegistry: any;
   admin: HardhatEthersSigner;
   operator: HardhatEthersSigner;
@@ -49,11 +50,19 @@ export async function deployExpressContracts(): Promise<ExpressDeployment> {
     asset: await usdo.getAddress(),
     priceFeed: ethers.ZeroAddress,
     isSupported: true,
+    isRedeemable: true,
     maxStalePeriod: 0,
   });
 
+  // Deploy ExpressLib library
+  const ExpressLibFactory = await ethers.getContractFactory('ExpressLib');
+  const expressLib = await ExpressLibFactory.deploy();
+  await expressLib.waitForDeployment();
+
   // Deploy Express
-  const ExpressFactory = await ethers.getContractFactory('Express');
+  const ExpressFactory = await ethers.getContractFactory('Express', {
+    libraries: { ExpressLib: await expressLib.getAddress() },
+  });
   const express = await upgrades.deployProxy(
     ExpressFactory,
     [
@@ -71,9 +80,12 @@ export async function deployExpressContracts(): Promise<ExpressDeployment> {
         firstDepositAmount: ethers.parseUnits('1000', 18), // 1000 OEM first deposit
       },
     ],
-    { kind: 'uups', initializer: 'initialize' }
+    { kind: 'uups', initializer: 'initialize', unsafeAllowLinkedLibraries: true }
   );
   await express.waitForDeployment();
+
+  // Finalize V2 queue encoding
+  await express.reinitializeV2();
 
   // Grant roles to express contract
   const MINTER_ROLE = await oem.MINTER_ROLE();
@@ -119,6 +131,7 @@ export async function deployExpressContracts(): Promise<ExpressDeployment> {
     oem,
     usdo,
     express,
+    expressLib,
     assetRegistry,
     admin,
     operator,

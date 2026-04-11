@@ -9,6 +9,7 @@ interface IAssetRegistry {
     struct AssetConfig {
         address asset;
         bool isSupported;
+        bool isRedeemable;
         address priceFeed; // Optional: IPriceFeed contract for price conversion (like TBILL)
         uint256 maxStalePeriod; // Maximum staleness period for this asset's price feed (in seconds)
     }
@@ -38,6 +39,13 @@ interface IAssetRegistry {
      * @return supported True if asset is supported
      */
     function isAssetSupported(address asset) external view returns (bool supported);
+
+    /**
+     * @notice Check if asset is redeemable
+     * @param asset The asset address
+     * @return redeemable True if asset is redeemable
+     */
+    function isAssetRedeemable(address asset) external view returns (bool redeemable);
 
     /**
      * @notice Convert asset amount to target token amount

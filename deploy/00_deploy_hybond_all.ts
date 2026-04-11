@@ -110,6 +110,7 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
     asset: usdcAddressFinal,
     priceFeed: getConfigValue<string>(assetRegistryConfig, 'usdcPriceFeed'),
     isSupported: getConfigValue<boolean>(assetRegistryConfig, 'usdcSupported'),
+    isRedeemable: getConfigValue<boolean>(assetRegistryConfig, 'usdcRedeemable'),
     maxStalePeriod: getConfigValue<number>(assetRegistryConfig, 'usdcMaxStalePeriod'),
   });
   console.log('✅ USDC asset configured in registry');

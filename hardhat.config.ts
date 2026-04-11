@@ -55,6 +55,9 @@ const config: HardhatUserConfig = {
       },
       viaIR: true,
       evmVersion: 'cancun',
+      metadata: {
+        bytecodeHash: 'none',
+      },
     },
   },
   sourcify: {

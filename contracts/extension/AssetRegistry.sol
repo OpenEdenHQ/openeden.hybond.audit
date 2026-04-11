@@ -115,6 +115,10 @@ contract AssetRegistry is IAssetRegistry, UUPSUpgradeable, Ownable2StepUpgradeab
         return _assetConfigs[asset].isSupported;
     }
 
+    function isAssetRedeemable(address asset) external view returns (bool) {
+        return _assetConfigs[asset].isRedeemable;
+    }
+
     function convertFromUnderlying(address _asset, uint256 _amount) external view returns (uint256 amount) {
         AssetConfig memory config = _assetConfigs[_asset];
         if (!config.isSupported) revert AssetRegistryAssetNotSupported(_asset);

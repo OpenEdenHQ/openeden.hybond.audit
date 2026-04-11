@@ -229,7 +229,7 @@ describe('Express - Comprehensive Tests', function () {
 
         const amount = ethers.parseUnits('1000', 18);
         const startingLiquidity = await usdo.balanceOf(await express.getAddress());
-        await express.connect(operator).offRamp(startingLiquidity);
+        await express.connect(operator).offRamp(await usdo.getAddress(), startingLiquidity);
         await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
 
         const usdoAddress = await usdo.getAddress();
@@ -359,13 +359,15 @@ describe('Express - Comprehensive Tests', function () {
 
     describe('Redeem Preview', function () {
       it('should quote the fee in redeemAsset units', async function () {
-        const { express, maintainer } = await loadFixture(deployFixture);
+        const { express, usdo, maintainer } = await loadFixture(deployFixture);
 
         await express.connect(maintainer).updateRedeemFeeRate(100);
 
         const withdrawAmount = ethers.parseUnits('1000', 18);
-        const [feeAmt, redeemAssetAmt, netRedeemAssetAmt] =
-          await express.previewRedeem(withdrawAmount);
+        const [feeAmt, redeemAssetAmt, netRedeemAssetAmt] = await express.previewRedeem(
+          withdrawAmount,
+          await usdo.getAddress()
+        );
 
         expect(redeemAssetAmt).to.equal(withdrawAmount);
         expect(feeAmt).to.equal((redeemAssetAmt * 100n) / 10000n);
@@ -385,7 +387,10 @@ describe('Express - Comprehensive Tests', function () {
         const ratio = await express.sharesPerToken();
         const expectedRedeemAssetAmt = trim((redeemAmount * ratio) / ethers.parseUnits('1', 18), 3);
 
-        const [, redeemAssetAmt] = await express.previewRedeem(redeemAmount);
+        const [, redeemAssetAmt] = await express.previewRedeem(
+          redeemAmount,
+          await usdo.getAddress()
+        );
 
         expect(ratio).to.be.lt(ethers.parseUnits('1', 18));
         expect(redeemAssetAmt).to.equal(expectedRedeemAssetAmt);
@@ -396,7 +401,7 @@ describe('Express - Comprehensive Tests', function () {
     describe('Pending Redeem Queue', function () {
       it('should add redeem to pending queue', async function () {
         const fixture = await loadFixture(deployFixture);
-        const { express, user1, oem } = await setupUserWithTokens(fixture);
+        const { express, usdo, user1, oem } = await setupUserWithTokens(fixture);
 
         const redeemAmount = ethers.parseUnits('1000', 18);
 
@@ -405,10 +410,9 @@ describe('Express - Comprehensive Tests', function () {
 
         const queueLengthBefore = await express.getPendingRedeemQueueLength();
 
-        await expect(express.connect(user1).requestRedeem(user1.address, redeemAmount)).to.emit(
-          express,
-          'AddToPendingRedeemQueue'
-        );
+        await expect(
+          express.connect(user1).requestRedeem(user1.address, redeemAmount, await usdo.getAddress())
+        ).to.emit(express, 'AddToPendingRedeemQueue');
 
         const queueLengthAfter = await express.getPendingRedeemQueueLength();
         expect(queueLengthAfter).to.equal(queueLengthBefore + 1n);
@@ -416,7 +420,7 @@ describe('Express - Comprehensive Tests', function () {
 
       it('should enforce withdraw minimum', async function () {
         const fixture = await loadFixture(deployFixture);
-        const { express, user1, oem } = await setupUserWithTokens(fixture);
+        const { express, usdo, user1, oem } = await setupUserWithTokens(fixture);
 
         const redeemMin = await express.redeemMinimum();
         const belowMin = redeemMin - ethers.parseUnits('1', 18);
@@ -424,17 +428,19 @@ describe('Express - Comprehensive Tests', function () {
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
 
         await expect(
-          express.connect(user1).requestRedeem(user1.address, belowMin)
+          express.connect(user1).requestRedeem(user1.address, belowMin, await usdo.getAddress())
         ).to.be.revertedWithCustomError(express, 'RedeemLessThanMinimum');
       });
 
       it('should not process withdraws before T+2 delay', async function () {
         const fixture = await loadFixture(deployFixture);
-        const { express, user1, oem, operator } = await setupUserWithTokens(fixture);
+        const { express, usdo, user1, oem, operator } = await setupUserWithTokens(fixture);
 
         const redeemAmount = ethers.parseUnits('1000', 18);
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+        await express
+          .connect(user1)
+          .requestRedeem(user1.address, redeemAmount, await usdo.getAddress());
 
         // Try to process immediately (before T+2)
         await expect(
@@ -444,11 +450,13 @@ describe('Express - Comprehensive Tests', function () {
 
       it('should process withdraws after T+2 delay', async function () {
         const fixture = await loadFixture(deployFixture);
-        const { express, user1, oem, operator } = await setupUserWithTokens(fixture);
+        const { express, usdo, user1, oem, operator } = await setupUserWithTokens(fixture);
 
         const redeemAmount = ethers.parseUnits('1000', 18);
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+        await express
+          .connect(user1)
+          .requestRedeem(user1.address, redeemAmount, await usdo.getAddress());
 
         // Fast forward 2 days
         const withdrawDelay = await express.convertRedeemRequestsDelay();
@@ -464,7 +472,8 @@ describe('Express - Comprehensive Tests', function () {
 
       it('should use the T+2 ratio after daily management fee mint', async function () {
         const fixture = await loadFixture(deployFixture);
-        const { express, user1, oem, maintainer, operator } = await setupUserWithTokens(fixture);
+        const { express, usdo, user1, oem, maintainer, operator } =
+          await setupUserWithTokens(fixture);
 
         await express.connect(maintainer).updateMgtFeeRate(300);
         const timeBuffer = await express.timeBuffer();
@@ -473,7 +482,9 @@ describe('Express - Comprehensive Tests', function () {
 
         const redeemAmount = ethers.parseUnits('1000', 18);
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+        await express
+          .connect(user1)
+          .requestRedeem(user1.address, redeemAmount, await usdo.getAddress());
 
         const ratioAtProcessing = await express.sharesPerToken();
         const expectedRedeemAssetAmt = trim(
@@ -486,7 +497,7 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
-        const [, , queuedShareAmount, redeemAssetAmt] = await express.getRedeemQueueInfo(0);
+        const [, , queuedShareAmount, , redeemAssetAmt] = await express.getRedeemQueueInfo(0);
         expect(queuedShareAmount).to.equal(redeemAmount);
         expect(redeemAssetAmt).to.equal(expectedRedeemAssetAmt);
         expect(redeemAssetAmt).to.be.lt(redeemAmount);
@@ -494,12 +505,14 @@ describe('Express - Comprehensive Tests', function () {
 
       it('should preserve original timestamp when processing', async function () {
         const fixture = await loadFixture(deployFixture);
-        const { express, user1, oem, operator } = await setupUserWithTokens(fixture);
+        const { express, usdo, user1, oem, operator } = await setupUserWithTokens(fixture);
 
         const redeemAmount = ethers.parseUnits('1000', 18);
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
 
-        const tx = await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+        const tx = await express
+          .connect(user1)
+          .requestRedeem(user1.address, redeemAmount, await usdo.getAddress());
         const receipt = await tx.wait();
         const requestBlock = await ethers.provider.getBlock(receipt!.blockNumber);
         const requestTimestamp = requestBlock!.timestamp;
@@ -513,7 +526,7 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(operator).processPendingRedeems(1);
 
         // Check withdraw queue has correct timestamp
-        const [, , , , , timestamp] = await express.getRedeemQueueInfo(0);
+        const [, , , , , , timestamp] = await express.getRedeemQueueInfo(0);
         expect(timestamp).to.equal(requestTimestamp);
       });
 
@@ -540,8 +553,12 @@ describe('Express - Comprehensive Tests', function () {
         const redeemAmount2 = ethers.parseUnits('2000', 18);
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
         await oem.connect(user2).approve(await express.getAddress(), ethers.MaxUint256);
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount1);
-        await express.connect(user2).requestRedeem(user2.address, redeemAmount2);
+        await express
+          .connect(user1)
+          .requestRedeem(user1.address, redeemAmount1, await usdo.getAddress());
+        await express
+          .connect(user2)
+          .requestRedeem(user2.address, redeemAmount2, await usdo.getAddress());
 
         const ratioAtProcessing = await express.sharesPerToken();
         const expectedRedeemAssetAmt1 = trim(
@@ -558,8 +575,8 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(0);
 
-        const [, , , redeemAssetAmt1] = await express.getRedeemQueueInfo(0);
-        const [, , , redeemAssetAmt2] = await express.getRedeemQueueInfo(1);
+        const [, , , , redeemAssetAmt1] = await express.getRedeemQueueInfo(0);
+        const [, , , , redeemAssetAmt2] = await express.getRedeemQueueInfo(1);
         expect(redeemAssetAmt1).to.equal(expectedRedeemAssetAmt1);
         expect(redeemAssetAmt2).to.equal(expectedRedeemAssetAmt2);
       });
@@ -567,11 +584,13 @@ describe('Express - Comprehensive Tests', function () {
 
     describe('Final Redeem Queue', function () {
       async function setupRedemptionQueue(fixture: any) {
-        const { express, user1, oem, operator } = await setupUserWithTokens(fixture);
+        const { express, usdo, user1, oem, operator } = await setupUserWithTokens(fixture);
 
         const redeemAmount = ethers.parseUnits('1000', 18);
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+        await express
+          .connect(user1)
+          .requestRedeem(user1.address, redeemAmount, await usdo.getAddress());
 
         // Fast forward and process to final queue
         const withdrawDelay = await express.convertRedeemRequestsDelay();
@@ -653,7 +672,9 @@ describe('Express - Comprehensive Tests', function () {
 
         // User1 redeem
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+        await express
+          .connect(user1)
+          .requestRedeem(user1.address, redeemAmount, await usdo.getAddress());
 
         // User2 setup and redeem
         await express
@@ -661,7 +682,9 @@ describe('Express - Comprehensive Tests', function () {
           .requestDeposit(await usdo.getAddress(), ethers.parseUnits('5000', 18), user2.address);
         await express.connect(maintainer).processDepositQueue(1);
         await oem.connect(user2).approve(await express.getAddress(), ethers.MaxUint256);
-        await express.connect(user2).requestRedeem(user2.address, redeemAmount);
+        await express
+          .connect(user2)
+          .requestRedeem(user2.address, redeemAmount, await usdo.getAddress());
 
         // Fast forward and process to final queue
         const withdrawDelay = await express.convertRedeemRequestsDelay();
@@ -703,9 +726,15 @@ describe('Express - Comprehensive Tests', function () {
         await oem.connect(user2).approve(await express.getAddress(), ethers.MaxUint256);
         await oem.connect(user3).approve(await express.getAddress(), ethers.MaxUint256);
 
-        const tx1 = await express.connect(user1).requestRedeem(user1.address, redeemAmount);
-        const tx2 = await express.connect(user2).requestRedeem(user2.address, redeemAmount);
-        const tx3 = await express.connect(user3).requestRedeem(user3.address, redeemAmount);
+        const tx1 = await express
+          .connect(user1)
+          .requestRedeem(user1.address, redeemAmount, await usdo.getAddress());
+        const tx2 = await express
+          .connect(user2)
+          .requestRedeem(user2.address, redeemAmount, await usdo.getAddress());
+        const tx3 = await express
+          .connect(user3)
+          .requestRedeem(user3.address, redeemAmount, await usdo.getAddress());
 
         // Get timestamps
         const receipt1 = await tx1.wait();
@@ -756,9 +785,9 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(operator).revertRedeemToPending(0); // 0 = all
 
         // Check that timestamps are preserved in pending queue
-        const [, , , timestamp1] = await express.getPendingRedeemQueueInfo(0);
-        const [, , , timestamp2] = await express.getPendingRedeemQueueInfo(1);
-        const [, , , timestamp3] = await express.getPendingRedeemQueueInfo(2);
+        const [, , , , timestamp1] = await express.getPendingRedeemQueueInfo(0);
+        const [, , , , timestamp2] = await express.getPendingRedeemQueueInfo(1);
+        const [, , , , timestamp3] = await express.getPendingRedeemQueueInfo(2);
 
         expect(timestamp1).to.equal(originalTimestamps[0]);
         expect(timestamp2).to.equal(originalTimestamps[1]);
@@ -826,11 +855,13 @@ describe('Express - Comprehensive Tests', function () {
 
     describe('Cancel Redeems', function () {
       async function setupPendingRedemption(fixture: any) {
-        const { express, user1, oem } = await setupUserWithTokens(fixture);
+        const { express, usdo, user1, oem } = await setupUserWithTokens(fixture);
 
         const redeemAmount = ethers.parseUnits('1000', 18);
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+        await express
+          .connect(user1)
+          .requestRedeem(user1.address, redeemAmount, await usdo.getAddress());
 
         return { ...fixture, redeemAmount };
       }
@@ -911,11 +942,13 @@ describe('Express - Comprehensive Tests', function () {
 
     describe('Claim Escrow', function () {
       async function setupEscrowedUser(fixture: any) {
-        const { express, user1, oem, maintainer, admin } = await setupUserWithTokens(fixture);
+        const { express, usdo, user1, oem, maintainer, admin } = await setupUserWithTokens(fixture);
 
         const redeemAmount = ethers.parseUnits('1000', 18);
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+        await express
+          .connect(user1)
+          .requestRedeem(user1.address, redeemAmount, await usdo.getAddress());
 
         // Ban user1 and cancel pending redeem to escrow tokens
         const BANLIST_ROLE = await oem.BANLIST_ROLE();
@@ -982,14 +1015,18 @@ describe('Express - Comprehensive Tests', function () {
 
       it('should accumulate escrow across multiple cancelled redeems', async function () {
         const fixture = await loadFixture(deployFixture);
-        const { express, user1, oem, maintainer, admin } = await setupUserWithTokens(fixture);
+        const { express, usdo, user1, oem, maintainer, admin } = await setupUserWithTokens(fixture);
 
         const redeemAmount1 = ethers.parseUnits('500', 18);
         const redeemAmount2 = ethers.parseUnits('700', 18);
 
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount1);
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount2);
+        await express
+          .connect(user1)
+          .requestRedeem(user1.address, redeemAmount1, await usdo.getAddress());
+        await express
+          .connect(user1)
+          .requestRedeem(user1.address, redeemAmount2, await usdo.getAddress());
 
         // Ban user1 and cancel both
         const BANLIST_ROLE = await oem.BANLIST_ROLE();
@@ -1141,15 +1178,23 @@ describe('Express - Comprehensive Tests', function () {
 
   describe('Upgradeability', function () {
     it('should be upgradeable by UPGRADE_ROLE', async function () {
-      const { express, admin } = await loadFixture(deployFixture);
+      const { express, expressLib, admin } = await loadFixture(deployFixture);
 
-      const ExpressV2 = await ethers.getContractFactory('Express', admin);
+      const ExpressV2 = await ethers.getContractFactory('Express', {
+        signer: admin,
+        libraries: { ExpressLib: await expressLib.getAddress() },
+      });
 
-      await expect(upgrades.upgradeProxy(await express.getAddress(), ExpressV2)).to.not.be.reverted;
+      await expect(
+        upgrades.upgradeProxy(await express.getAddress(), ExpressV2, {
+          unsafeAllowLinkedLibraries: true,
+        })
+      ).to.not.be.reverted;
     });
 
     it('should preserve state after upgrade', async function () {
-      const { express, admin, usdo, user1, operator } = await loadFixture(deployFixture);
+      const { express, expressLib, admin, usdo, user1, operator } =
+        await loadFixture(deployFixture);
 
       // Setup some state
       const mintAmount = ethers.parseUnits('1000', 18);
@@ -1160,8 +1205,13 @@ describe('Express - Comprehensive Tests', function () {
       const queueLengthBefore = await express.getDepositQueueLength();
 
       // Upgrade
-      const ExpressV2 = await ethers.getContractFactory('Express', admin);
-      const upgraded = await upgrades.upgradeProxy(await express.getAddress(), ExpressV2);
+      const ExpressV2 = await ethers.getContractFactory('Express', {
+        signer: admin,
+        libraries: { ExpressLib: await expressLib.getAddress() },
+      });
+      const upgraded = await upgrades.upgradeProxy(await express.getAddress(), ExpressV2, {
+        unsafeAllowLinkedLibraries: true,
+      });
 
       // State should be preserved
       const queueLengthAfter = await upgraded.getDepositQueueLength();
@@ -1201,7 +1251,9 @@ describe('Express - Comprehensive Tests', function () {
       // Request withdraw (tokens move to contract in pendingWithdrawQueue)
       const withdrawAmount = ethers.parseUnits('1000', 18);
       await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-      await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
+      await express
+        .connect(user1)
+        .requestRedeem(user1.address, withdrawAmount, await usdo.getAddress());
 
       const circulatingAfter = await express.circulatingSupply();
 
@@ -1220,7 +1272,9 @@ describe('Express - Comprehensive Tests', function () {
       // Request withdraw
       const withdrawAmount = ethers.parseUnits('1000', 18);
       await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-      await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
+      await express
+        .connect(user1)
+        .requestRedeem(user1.address, withdrawAmount, await usdo.getAddress());
 
       // Move to final withdraw queue
       const withdrawDelay = await express.convertRedeemRequestsDelay();
@@ -1250,7 +1304,9 @@ describe('Express - Comprehensive Tests', function () {
       // Full withdraw flow
       const withdrawAmount = ethers.parseUnits('1000', 18);
       await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-      await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
+      await express
+        .connect(user1)
+        .requestRedeem(user1.address, withdrawAmount, await usdo.getAddress());
 
       const withdrawDelay = await express.convertRedeemRequestsDelay();
       await time.increase(withdrawDelay);
@@ -1283,7 +1339,9 @@ describe('Express - Comprehensive Tests', function () {
       // Request withdraw and move to final queue
       const withdrawAmount = ethers.parseUnits('1000', 18);
       await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-      await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
+      await express
+        .connect(user1)
+        .requestRedeem(user1.address, withdrawAmount, await usdo.getAddress());
 
       const withdrawDelay = await express.convertRedeemRequestsDelay();
       await time.increase(withdrawDelay);
@@ -1313,7 +1371,9 @@ describe('Express - Comprehensive Tests', function () {
       // Request withdraw and move to final queue
       const withdrawAmount = ethers.parseUnits('1000', 18);
       await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-      await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
+      await express
+        .connect(user1)
+        .requestRedeem(user1.address, withdrawAmount, await usdo.getAddress());
 
       const withdrawDelay = await express.convertRedeemRequestsDelay();
       await time.increase(withdrawDelay);
@@ -1359,9 +1419,9 @@ describe('Express - Comprehensive Tests', function () {
       await oem.connect(user2).approve(await express.getAddress(), ethers.MaxUint256);
       await oem.connect(user3).approve(await express.getAddress(), ethers.MaxUint256);
 
-      await express.connect(user1).requestRedeem(user1.address, w1);
-      await express.connect(user2).requestRedeem(user2.address, w2);
-      await express.connect(user3).requestRedeem(user3.address, w3);
+      await express.connect(user1).requestRedeem(user1.address, w1, await usdo.getAddress());
+      await express.connect(user2).requestRedeem(user2.address, w2, await usdo.getAddress());
+      await express.connect(user3).requestRedeem(user3.address, w3, await usdo.getAddress());
 
       // Move all to final withdraw queue
       const withdrawDelay = await express.convertRedeemRequestsDelay();
@@ -1443,7 +1503,9 @@ describe('Express - Comprehensive Tests', function () {
       // Request withdraw and move to final queue
       const withdrawAmount = ethers.parseUnits('1000', 18);
       await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-      await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
+      await express
+        .connect(user1)
+        .requestRedeem(user1.address, withdrawAmount, await usdo.getAddress());
 
       const withdrawDelay = await express.convertRedeemRequestsDelay();
       await time.increase(withdrawDelay);
@@ -1476,7 +1538,9 @@ describe('Express - Comprehensive Tests', function () {
       // Request withdraw and move to final queue
       const withdrawAmount = ethers.parseUnits('20000', 18);
       await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-      await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
+      await express
+        .connect(user1)
+        .requestRedeem(user1.address, withdrawAmount, await usdo.getAddress());
 
       const withdrawDelay = await express.convertRedeemRequestsDelay();
       await time.increase(withdrawDelay);
@@ -1500,7 +1564,9 @@ describe('Express - Comprehensive Tests', function () {
       // Withdraw 2000 to final queue
       const withdrawAmount = ethers.parseUnits('2000', 18);
       await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-      await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
+      await express
+        .connect(user1)
+        .requestRedeem(user1.address, withdrawAmount, await usdo.getAddress());
 
       const withdrawDelay = await express.convertRedeemRequestsDelay();
       await time.increase(withdrawDelay);
@@ -1531,7 +1597,9 @@ describe('Express - Comprehensive Tests', function () {
       // Full withdraw cycle
       const withdrawAmount = ethers.parseUnits('1000', 18);
       await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-      await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
+      await express
+        .connect(user1)
+        .requestRedeem(user1.address, withdrawAmount, await usdo.getAddress());
 
       const withdrawDelay = await express.convertRedeemRequestsDelay();
       await time.increase(withdrawDelay);
@@ -1584,7 +1652,9 @@ describe('Express - Comprehensive Tests', function () {
       // Request withdraw and move to final queue (reduces circulating supply)
       const withdrawAmount = ethers.parseUnits('20000', 18);
       await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-      await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
+      await express
+        .connect(user1)
+        .requestRedeem(user1.address, withdrawAmount, await usdo.getAddress());
 
       const withdrawDelay = await express.convertRedeemRequestsDelay();
       await time.increase(withdrawDelay);
@@ -1624,7 +1694,9 @@ describe('Express - Comprehensive Tests', function () {
       // Now request withdraw and move to final queue
       const withdrawAmount = ethers.parseUnits('50000', 18);
       await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-      await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
+      await express
+        .connect(user1)
+        .requestRedeem(user1.address, withdrawAmount, await usdo.getAddress());
 
       const withdrawDelay = await express.convertRedeemRequestsDelay();
       await time.increase(withdrawDelay);
@@ -1669,7 +1741,9 @@ describe('Express - Comprehensive Tests', function () {
       // Request withdraw (stays in pending queue, NOT in final withdraw queue)
       const withdrawAmount = ethers.parseUnits('20000', 18);
       await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-      await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
+      await express
+        .connect(user1)
+        .requestRedeem(user1.address, withdrawAmount, await usdo.getAddress());
 
       // Circulating should still include pending withdraw tokens
       const circulating = await express.circulatingSupply();
@@ -1816,10 +1890,10 @@ describe('Express - Comprehensive Tests', function () {
     });
 
     it('should handle zero amount redeem', async function () {
-      const { express, user1 } = await loadFixture(deployFixture);
+      const { express, usdo, user1 } = await loadFixture(deployFixture);
 
       await expect(
-        express.connect(user1).requestRedeem(user1.address, 0)
+        express.connect(user1).requestRedeem(user1.address, 0, await usdo.getAddress())
       ).to.be.revertedWithCustomError(express, 'InvalidAmount');
     });
   });
@@ -1987,7 +2061,9 @@ describe('Express - Comprehensive Tests', function () {
 
         const withdrawAmount = ethers.parseUnits('1000', 18);
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-        await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
+        await express
+          .connect(user1)
+          .requestRedeem(user1.address, withdrawAmount, await usdo.getAddress());
 
         const withdrawDelay = await express.convertRedeemRequestsDelay();
         await time.increase(withdrawDelay);
@@ -2003,7 +2079,7 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
-        const [, , , withdrawAssetAmt] = await express.getRedeemQueueInfo(0);
+        const [, , , , withdrawAssetAmt] = await express.getRedeemQueueInfo(0);
         // Last 15 digits should be zero
         expect(withdrawAssetAmt % 10n ** 15n).to.equal(0);
       });
@@ -2016,7 +2092,7 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
-        const [, , , withdrawAssetAmt] = await express.getRedeemQueueInfo(0);
+        const [, , , , withdrawAssetAmt] = await express.getRedeemQueueInfo(0);
         // Last 12 digits should be zero
         expect(withdrawAssetAmt % 10n ** 12n).to.equal(0);
       });
@@ -2030,240 +2106,9 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
-        const [, , , withdrawAssetAmt] = await express.getRedeemQueueInfo(0);
+        const [, , , , withdrawAssetAmt] = await express.getRedeemQueueInfo(0);
         // With 1:1 price and no fee, should equal the full withdraw amount
         expect(withdrawAssetAmt).to.equal(withdrawAmount);
-      });
-    });
-
-    describe('updateRedeemAsset', function () {
-      it('should allow maintainer to update redeemAsset when all queues are empty', async function () {
-        const { express, usdo, maintainer } = await loadFixture(deployFixture);
-
-        const MockERC20Factory = await ethers.getContractFactory('MockERC20');
-        const newAsset = await MockERC20Factory.deploy('New Asset', 'NEW', 18);
-        await newAsset.waitForDeployment();
-
-        const oldAsset = await express.redeemAsset();
-        expect(oldAsset).to.equal(await usdo.getAddress());
-
-        await expect(express.connect(maintainer).updateRedeemAsset(await newAsset.getAddress()))
-          .to.emit(express, 'UpdateRedeemAsset')
-          .withArgs(oldAsset, await newAsset.getAddress());
-
-        expect(await express.redeemAsset()).to.equal(await newAsset.getAddress());
-      });
-
-      it('should revert when called by non-maintainer', async function () {
-        const { express, usdo, user1 } = await loadFixture(deployFixture);
-
-        await expect(
-          express.connect(user1).updateRedeemAsset(await usdo.getAddress())
-        ).to.be.revertedWithCustomError(express, 'AccessControlUnauthorizedAccount');
-      });
-
-      it('should revert when address is zero', async function () {
-        const { express, maintainer } = await loadFixture(deployFixture);
-
-        await expect(
-          express.connect(maintainer).updateRedeemAsset(ethers.ZeroAddress)
-        ).to.be.revertedWithCustomError(express, 'InvalidAddress');
-      });
-
-      it('should revert when deposit queue is not empty', async function () {
-        const { express, usdo, user1, maintainer } = await loadFixture(deployFixture);
-
-        const MockERC20Factory = await ethers.getContractFactory('MockERC20');
-        const newAsset = await MockERC20Factory.deploy('New Asset', 'NEW', 18);
-
-        // Add a deposit request to make the queue non-empty
-        const firstDepositMin = await express.firstDepositAmount();
-        await express
-          .connect(user1)
-          .requestDeposit(await usdo.getAddress(), firstDepositMin, user1.address);
-
-        expect(await express.getDepositQueueLength()).to.be.gt(0);
-
-        await expect(
-          express.connect(maintainer).updateRedeemAsset(await newAsset.getAddress())
-        ).to.be.revertedWithCustomError(express, 'QueuesNotEmpty');
-      });
-
-      it('should revert when pending redeem queue is not empty', async function () {
-        const { express, oem, usdo, user1, maintainer } = await loadFixture(deployFixture);
-
-        const MockERC20Factory = await ethers.getContractFactory('MockERC20');
-        const newAsset = await MockERC20Factory.deploy('New Asset', 'NEW', 18);
-
-        // Deposit first to get tokens
-        const depositAmount = ethers.parseUnits('5000', 18);
-        await express
-          .connect(user1)
-          .requestDeposit(await usdo.getAddress(), depositAmount, user1.address);
-        await express.connect(maintainer).processDepositQueue(1);
-
-        // Request redeem to populate pendingRedeemQueue
-        const redeemAmount = await express.redeemMinimum();
-        await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
-
-        expect(await express.getPendingRedeemQueueLength()).to.be.gt(0);
-
-        await expect(
-          express.connect(maintainer).updateRedeemAsset(await newAsset.getAddress())
-        ).to.be.revertedWithCustomError(express, 'QueuesNotEmpty');
-      });
-
-      it('should revert when redeem queue is not empty', async function () {
-        const { express, oem, usdo, user1, maintainer, operator } =
-          await loadFixture(deployFixture);
-
-        const MockERC20Factory = await ethers.getContractFactory('MockERC20');
-        const newAsset = await MockERC20Factory.deploy('New Asset', 'NEW', 18);
-
-        // Deposit first to get tokens
-        const depositAmount = ethers.parseUnits('5000', 18);
-        await express
-          .connect(user1)
-          .requestDeposit(await usdo.getAddress(), depositAmount, user1.address);
-        await express.connect(maintainer).processDepositQueue(1);
-
-        // Request redeem and advance to final redeem queue
-        const redeemAmount = await express.redeemMinimum();
-        await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
-
-        // Advance time past T+2 delay to allow processing pending redeems
-        const delay = await express.convertRedeemRequestsDelay();
-        await time.increase(delay + 1n);
-
-        // Process pending redeems into final redeem queue
-        await express.connect(operator).snapshotPendingRedeemRatio();
-        await express.connect(operator).processPendingRedeems(1);
-
-        expect(await express.getRedeemQueueLength()).to.be.gt(0);
-
-        await expect(
-          express.connect(maintainer).updateRedeemAsset(await newAsset.getAddress())
-        ).to.be.revertedWithCustomError(express, 'QueuesNotEmpty');
-      });
-
-      it('should succeed after all queues are drained', async function () {
-        const { express, oem, usdo, user1, maintainer, operator } =
-          await loadFixture(deployFixture);
-
-        const MockERC20Factory = await ethers.getContractFactory('MockERC20');
-        const newAsset = await MockERC20Factory.deploy('New Asset', 'NEW', 18);
-
-        // Deposit, process, redeem, process all queues to drain them
-        const depositAmount = ethers.parseUnits('5000', 18);
-        await express
-          .connect(user1)
-          .requestDeposit(await usdo.getAddress(), depositAmount, user1.address);
-        await express.connect(maintainer).processDepositQueue(1);
-
-        const redeemAmount = await express.redeemMinimum();
-        await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
-
-        const delay = await express.convertRedeemRequestsDelay();
-        await time.increase(delay + 1n);
-        await express.connect(operator).snapshotPendingRedeemRatio();
-        await express.connect(operator).processPendingRedeems(1);
-        await express.connect(operator).processRedeemQueue(1);
-
-        // All queues should now be empty
-        expect(await express.getDepositQueueLength()).to.equal(0);
-        expect(await express.getPendingRedeemQueueLength()).to.equal(0);
-        expect(await express.getRedeemQueueLength()).to.equal(0);
-
-        // Now updateRedeemAsset should succeed
-        await expect(
-          express.connect(maintainer).updateRedeemAsset(await newAsset.getAddress())
-        ).to.emit(express, 'UpdateRedeemAsset');
-
-        expect(await express.redeemAsset()).to.equal(await newAsset.getAddress());
-      });
-
-      it('should not affect redeemEscrowBalance after changing redeemAsset', async function () {
-        const { express, oem, usdo, user1, maintainer, operator, admin } =
-          await loadFixture(deployFixture);
-
-        // Deposit to get tokens
-        const depositAmount = ethers.parseUnits('5000', 18);
-        await express
-          .connect(user1)
-          .requestDeposit(await usdo.getAddress(), depositAmount, user1.address);
-        await express.connect(maintainer).processDepositQueue(1);
-
-        // Request redeem
-        const redeemAmount = await express.redeemMinimum();
-        await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
-
-        // Ban user1 before cancelling so refund goes to escrow
-        const BANLIST_ROLE = await oem.BANLIST_ROLE();
-        await oem.connect(admin).grantRole(BANLIST_ROLE, admin.address);
-        await oem.connect(admin).banAddresses([user1.address]);
-
-        // Cancel redeem — refund should go to escrow since user1 is banned
-        const delay = await express.convertRedeemRequestsDelay();
-        await time.increase(delay + 1n);
-        await express.connect(operator).snapshotPendingRedeemRatio();
-        await express.connect(operator).processPendingRedeems(1);
-        await express.connect(maintainer).cancelRedeem(1);
-
-        const escrowBalance = await express.redeemEscrowBalance(user1.address);
-        expect(escrowBalance).to.be.gt(0);
-
-        // Now change redeemAsset
-        const MockERC20Factory = await ethers.getContractFactory('MockERC20');
-        const newAsset = await MockERC20Factory.deploy('New Asset', 'NEW', 18);
-        await express.connect(maintainer).updateRedeemAsset(await newAsset.getAddress());
-
-        // Escrow balance should be unchanged (it's in HYBOND tokens, not redeemAsset)
-        expect(await express.redeemEscrowBalance(user1.address)).to.equal(escrowBalance);
-
-        // Unban and claim — should still work since escrow is in HYBOND tokens
-        await oem.connect(admin).unbanAddresses([user1.address]);
-        await express.connect(user1).claimRedeemEscrow(user1.address);
-        expect(await express.redeemEscrowBalance(user1.address)).to.equal(0);
-        expect(await oem.balanceOf(user1.address)).to.be.gt(0);
-      });
-
-      it('should not affect depositEscrowBalance after changing redeemAsset', async function () {
-        const { express, oem, usdo, user1, maintainer, admin } = await loadFixture(deployFixture);
-
-        // Deposit request
-        const firstDepositMin = await express.firstDepositAmount();
-        await express
-          .connect(user1)
-          .requestDeposit(await usdo.getAddress(), firstDepositMin, user1.address);
-
-        // Ban user1 before cancelling so refund goes to deposit escrow
-        const BANLIST_ROLE = await oem.BANLIST_ROLE();
-        await oem.connect(admin).grantRole(BANLIST_ROLE, admin.address);
-        await oem.connect(admin).banAddresses([user1.address]);
-
-        // Cancel deposit — refund should go to deposit escrow
-        await express.connect(maintainer).cancelDeposit(1);
-
-        const usdoAddr = await usdo.getAddress();
-        const depositEscrow = await express.depositEscrowBalance(user1.address, usdoAddr);
-        expect(depositEscrow).to.be.gt(0);
-
-        // Change redeemAsset
-        const MockERC20Factory = await ethers.getContractFactory('MockERC20');
-        const newAsset = await MockERC20Factory.deploy('New Asset', 'NEW', 18);
-        await express.connect(maintainer).updateRedeemAsset(await newAsset.getAddress());
-
-        // Deposit escrow balance should be unchanged (keyed by original deposit asset)
-        expect(await express.depositEscrowBalance(user1.address, usdoAddr)).to.equal(depositEscrow);
-
-        // Unban and claim
-        await oem.connect(admin).unbanAddresses([user1.address]);
-        await express.connect(user1).claimDepositEscrow(user1.address, usdoAddr);
-        expect(await express.depositEscrowBalance(user1.address, usdoAddr)).to.equal(0);
       });
     });
 
@@ -2307,28 +2152,35 @@ describe('Express - Comprehensive Tests', function () {
 
         const redeemAmount = ethers.parseUnits('1000', 18);
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+        await express
+          .connect(user1)
+          .requestRedeem(user1.address, redeemAmount, await usdo.getAddress());
 
         const withdrawDelay = await express.convertRedeemRequestsDelay();
         await time.increase(withdrawDelay);
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
-        const [, , , redeemAssetAmt] = await express.getRedeemQueueInfo(0);
+        const [, , , , redeemAssetAmt] = await express.getRedeemQueueInfo(0);
         expect(redeemAssetAmt).to.equal(trim(redeemAmount, TRIM_DECIMALS));
       });
 
       it('should match previewRedeem with actual processing when no state changes between', async function () {
         const fixture = await loadFixture(deployFixture);
-        const { express, user1, oem, operator } = await setupWithMgtFee(fixture);
+        const { express, usdo, user1, oem, operator } = await setupWithMgtFee(fixture);
 
         const redeemAmount = ethers.parseUnits('1000', 18);
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
 
         // Preview before requesting
-        const [previewFee, previewGross, previewNet] = await express.previewRedeem(redeemAmount);
+        const [previewFee, previewGross, previewNet] = await express.previewRedeem(
+          redeemAmount,
+          await usdo.getAddress()
+        );
 
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+        await express
+          .connect(user1)
+          .requestRedeem(user1.address, redeemAmount, await usdo.getAddress());
 
         // Process immediately after delay (no intervening updateEpoch/deposits/cancels)
         const withdrawDelay = await express.convertRedeemRequestsDelay();
@@ -2336,7 +2188,7 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
-        const [, , , redeemAssetAmt, feeAssetAmt] = await express.getRedeemQueueInfo(0);
+        const [, , , , redeemAssetAmt, feeAssetAmt] = await express.getRedeemQueueInfo(0);
         expect(redeemAssetAmt).to.equal(previewGross);
         expect(feeAssetAmt).to.equal(previewFee);
       });
@@ -2350,7 +2202,9 @@ describe('Express - Comprehensive Tests', function () {
 
         const redeemAmount = ethers.parseUnits('1000', 18);
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+        await express
+          .connect(user1)
+          .requestRedeem(user1.address, redeemAmount, await usdo.getAddress());
 
         const withdrawDelay = await express.convertRedeemRequestsDelay();
         await time.increase(withdrawDelay);
@@ -2358,7 +2212,7 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(operator).processPendingRedeems(1);
 
         // redeemAssetAmt should be less than redeemAmount due to dilution
-        const [, , , redeemAssetAmt] = await express.getRedeemQueueInfo(0);
+        const [, , , , redeemAssetAmt] = await express.getRedeemQueueInfo(0);
         expect(redeemAssetAmt).to.be.lt(redeemAmount);
 
         const userUsdoBefore = await usdo.balanceOf(user1.address);
@@ -2375,7 +2229,7 @@ describe('Express - Comprehensive Tests', function () {
 
       it('should calculate the exact diluted redeem amount after daily fee mint', async function () {
         const fixture = await loadFixture(deployFixture);
-        const { express, user1, oem, operator } = await setupWithMgtFee(fixture);
+        const { express, usdo, user1, oem, operator } = await setupWithMgtFee(fixture);
 
         const redeemAmount = ethers.parseUnits('1000', 18);
         const ratioAtProcessing = await express.sharesPerToken();
@@ -2385,14 +2239,16 @@ describe('Express - Comprehensive Tests', function () {
         );
 
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+        await express
+          .connect(user1)
+          .requestRedeem(user1.address, redeemAmount, await usdo.getAddress());
 
         const redeemDelay = await express.convertRedeemRequestsDelay();
         await time.increase(redeemDelay);
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
-        const [, , queuedShareAmount, redeemAssetAmt] = await express.getRedeemQueueInfo(0);
+        const [, , queuedShareAmount, , redeemAssetAmt] = await express.getRedeemQueueInfo(0);
         expect(queuedShareAmount).to.equal(redeemAmount);
         expect(redeemAssetAmt).to.equal(expectedRedeemAssetAmt);
         expect(redeemAssetAmt).to.be.lt(redeemAmount);
@@ -2400,18 +2256,20 @@ describe('Express - Comprehensive Tests', function () {
 
       it('should recalculate ratio on revert-then-reprocess after another daily fee mint', async function () {
         const fixture = await loadFixture(deployFixture);
-        const { express, user1, oem, maintainer, operator } = await setupWithMgtFee(fixture);
+        const { express, usdo, user1, oem, maintainer, operator } = await setupWithMgtFee(fixture);
 
         const redeemAmount = ethers.parseUnits('1000', 18);
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+        await express
+          .connect(user1)
+          .requestRedeem(user1.address, redeemAmount, await usdo.getAddress());
 
         const withdrawDelay = await express.convertRedeemRequestsDelay();
         await time.increase(withdrawDelay);
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
-        const [, , , redeemAssetAmtFirst] = await express.getRedeemQueueInfo(0);
+        const [, , , , redeemAssetAmtFirst] = await express.getRedeemQueueInfo(0);
 
         // Revert to pending
         await express.connect(operator).revertRedeemToPending(0);
@@ -2425,7 +2283,7 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
-        const [, , , redeemAssetAmtSecond] = await express.getRedeemQueueInfo(0);
+        const [, , , , redeemAssetAmtSecond] = await express.getRedeemQueueInfo(0);
 
         // Second processing should use a lower ratio (more dilution)
         expect(redeemAssetAmtSecond).to.be.lte(redeemAssetAmtFirst);
@@ -2437,14 +2295,16 @@ describe('Express - Comprehensive Tests', function () {
 
       it('should refund full token amount on cancelPendingRedeem even with mgt fee dilution', async function () {
         const fixture = await loadFixture(deployFixture);
-        const { express, user1, oem, maintainer } = await setupWithMgtFee(fixture);
+        const { express, usdo, user1, oem, maintainer } = await setupWithMgtFee(fixture);
 
         const ratio = await express.sharesPerToken();
         expect(ratio).to.be.lt(ethers.parseUnits('1', 18));
 
         const redeemAmount = ethers.parseUnits('1000', 18);
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+        await express
+          .connect(user1)
+          .requestRedeem(user1.address, redeemAmount, await usdo.getAddress());
 
         const userBalanceBefore = await oem.balanceOf(user1.address);
 
@@ -2458,13 +2318,15 @@ describe('Express - Comprehensive Tests', function () {
 
       it('should clear pending redeem accounting on cancelPendingRedeem with mgt fee dilution', async function () {
         const fixture = await loadFixture(deployFixture);
-        const { express, user1, oem, maintainer } = await setupWithMgtFee(fixture);
+        const { express, usdo, user1, oem, maintainer } = await setupWithMgtFee(fixture);
 
         const redeemAmount = ethers.parseUnits('1000', 18);
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
 
         const circulatingBefore = await express.circulatingSupply();
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+        await express
+          .connect(user1)
+          .requestRedeem(user1.address, redeemAmount, await usdo.getAddress());
 
         expect(await express.pendingRedeemInfo(user1.address)).to.equal(redeemAmount);
         expect(await express.getPendingRedeemQueueLength()).to.equal(1);
@@ -2479,13 +2341,15 @@ describe('Express - Comprehensive Tests', function () {
 
       it('should refund full token amount and restore final queue accounting on cancelRedeem with mgt fee dilution', async function () {
         const fixture = await loadFixture(deployFixture);
-        const { express, user1, oem, maintainer, operator } = await setupWithMgtFee(fixture);
+        const { express, usdo, user1, oem, maintainer, operator } = await setupWithMgtFee(fixture);
 
         const redeemAmount = ethers.parseUnits('1000', 18);
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
 
         const circulatingBefore = await express.circulatingSupply();
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+        await express
+          .connect(user1)
+          .requestRedeem(user1.address, redeemAmount, await usdo.getAddress());
 
         const redeemDelay = await express.convertRedeemRequestsDelay();
         await time.increase(redeemDelay);
@@ -2514,8 +2378,13 @@ describe('Express - Comprehensive Tests', function () {
         const redeemAmount = ethers.parseUnits('1000', 18);
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
 
-        const [, previewBeforeDeposit] = await express.previewRedeem(redeemAmount);
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
+        const [, previewBeforeDeposit] = await express.previewRedeem(
+          redeemAmount,
+          await usdo.getAddress()
+        );
+        await express
+          .connect(user1)
+          .requestRedeem(user1.address, redeemAmount, await usdo.getAddress());
 
         const depositAmount = ethers.parseUnits('5000', 18);
         await express
@@ -2533,7 +2402,7 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
-        const [, , , redeemAssetAmtAfterDeposit] = await express.getRedeemQueueInfo(0);
+        const [, , , , redeemAssetAmtAfterDeposit] = await express.getRedeemQueueInfo(0);
         expect(redeemAssetAmtAfterDeposit).to.be.gt(previewBeforeDeposit);
       });
     });

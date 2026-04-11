@@ -31,9 +31,9 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
 
   // Helper: request redeem and move to pending queue
   async function requestRedeemFor(fixture: any, user: any, amount: bigint) {
-    const { express, oem } = fixture;
+    const { express, usdo, oem } = fixture;
     await oem.connect(user).approve(await express.getAddress(), ethers.MaxUint256);
-    await express.connect(user).requestRedeem(user.address, amount);
+    await express.connect(user).requestRedeem(user.address, amount, await usdo.getAddress());
   }
 
   // Helper: advance past T+2 delay, snapshot ratio, and process pending redeems

@@ -11,6 +11,7 @@
     "usdcAsset": "0x7069C635d6fCd1C3D0cd9b563CDC6373e06052ee",
     "usdcPriceFeed": "0x0000000000000000000000000000000000000000",
     "usdcSupported": true,
+    "usdcRedeemable": true,
     "usdcMaxStalePeriod": 0
   },
   "PriceOracle": {
