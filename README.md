@@ -19,6 +19,40 @@ The current `PriceOracle` uses:
 - staged updates via `proposePrice()` and `confirmPrice()`
 - a 1-day expiry for pending price proposals
 
+## Management Fee Accounting (Express)
+
+`Express` charges a daily management fee to `mgtFeeTo` via `updateEpoch`. Fee accounting uses two counters:
+
+- **`totalMgtFeeMinted`** — cumulative fees ever minted. Monotonic; never decremented. Anchors historical dilution in the `sharesPerToken` denominator even after fee tokens are burned.
+- **`totalMgtFeeUnclaimed`** — currently live (unredeemed) fee tokens. Decremented when fee tokens move from the pending redeem queue to the final redeem queue.
+
+Share accounting:
+
+```
+circulatingSupply = totalSupply − totalRedeemQueueShares − totalMgtFeeUnclaimed
+sharesPerToken    = circulatingSupply / (circulatingSupply + totalMgtFeeMinted)
+```
+
+The ratio moves only on fee accrual and new user deposits. Fee redemptions (request → pending→final → burn) leave both `circulatingSupply` and `sharesPerToken` unchanged.
+
+On-chain guards:
+
+- `requestRedeem` called by `mgtFeeTo` **overrides** the caller-supplied amount to `totalMgtFeeUnclaimed` (full live balance). Prevents fee-share provenance desync.
+- `updateMgtFeeTo` requires `totalMgtFeeUnclaimed == 0` AND empty redeem queues.
+- `requestDeposit` and `_calculateMintAmount` both revert `DrainedInstance` when `circulatingSupply() == 0 && totalMgtFeeMinted > 0` — a drained instance with historical fees is terminal; redeploy instead of reusing.
+
+### Operational invariants for `mgtFeeTo` (enforced off-chain)
+
+The full list lives in the comment block at `contracts/extension/Express.sol` near the `mgtFeeTo` declaration. Operators must:
+
+1. Transfer HYBOND shares from `mgtFeeTo` only to the `Express` contract via `requestRedeem`.
+2. Move any non-fee shares that land on `mgtFeeTo` to a quarantine wallet; do not redeem them from `mgtFeeTo`.
+3. Never ban `mgtFeeTo` while it holds live fees or has in-flight fee redeems.
+4. Drain both redeem queues before rotating `mgtFeeTo` (also enforced on-chain).
+5. Keep `mgtFeeTo` unbanned for the lifetime of the pool — future `updateEpoch` mints would fail on a banned recipient.
+6. Keep `mgtFeeTo` and any fee-redeem receiver KYC-listed through settlement.
+7. Do not change `convertRedeemRequestsDelay`, `redeemFeeRate`, `depositFeeRate`, `priceOracle`, `maxStalePeriod`, or `trimDecimals` while any queue is non-empty — these values are read live at processing time and changes retroactively affect queued entries.
+
 ## Requirements
 
 - Node.js 18+ recommended

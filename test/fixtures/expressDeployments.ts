@@ -132,3 +132,43 @@ export async function deployExpressContracts(): Promise<ExpressDeployment> {
     user3,
   };
 }
+
+/**
+ * Seeds offchainShares after a bootstrap deposit so downstream tests can
+ * do additional deposits priced against a real offchainShares value.
+ *
+ * Flow:
+ *   1. User1 deposits firstDepositAmount (totalSupply == 0 → bootstrap allowed)
+ *   2. Maintainer processes the queue (mints HYBOND at 1:1 via fallback ratio)
+ *   3. Operator proposes offchainShares = minted amount (ratio = 1)
+ *   4. Confirmer confirms
+ *
+ * After this helper, subsequent tests see:
+ *   - user1 holds `firstDepositAmount` HYBOND
+ *   - offchainShares == totalSupply → sharesPerToken == 1e18
+ */
+export async function bootstrapAndSeedOffchainShares(
+  deployment: ExpressDeployment,
+  confirmer: HardhatEthersSigner
+): Promise<{ depositedAmount: bigint }> {
+  const { express, usdo, user1, maintainer, operator, admin } = deployment;
+
+  const firstDepositAmount = await express.firstDepositAmount();
+
+  // Bootstrap deposit
+  await express
+    .connect(user1)
+    .requestDeposit(await usdo.getAddress(), firstDepositAmount, user1.address);
+  await express.connect(maintainer).processDepositQueue(1);
+
+  // Seed offchainShares = circulating supply (ratio = 1)
+  const totalSupply = await deployment.oem.totalSupply();
+  const CONFIRM_ROLE = await express.CONFIRM_ROLE();
+  if (!(await express.hasRole(CONFIRM_ROLE, confirmer.address))) {
+    await express.connect(admin).grantRole(CONFIRM_ROLE, confirmer.address);
+  }
+  await express.connect(operator).proposeOffchainShares(totalSupply);
+  await express.connect(confirmer).confirmOffchainShares(totalSupply);
+
+  return { depositedAmount: firstDepositAmount };
+}

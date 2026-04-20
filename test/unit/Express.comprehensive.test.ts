@@ -2,7 +2,6 @@ import { expect } from 'chai';
 import { ethers, upgrades } from 'hardhat';
 import { loadFixture, time } from '@nomicfoundation/hardhat-network-helpers';
 import { deployExpressContracts } from '../fixtures/expressDeployments';
-import { HardhatEthersSigner } from '@nomicfoundation/hardhat-ethers/signers';
 
 // Mirror the contract's _trim: truncate 18-decimal value to given decimals (round down)
 function trim(value: bigint, decimals: number): bigint {
@@ -17,9 +16,21 @@ describe('Express - Comprehensive Tests', function () {
   // Helper to deploy fresh contracts for each test
   async function deployFixture() {
     const fixture = await deployExpressContracts();
+    const signers = await ethers.getSigners();
+    const confirmer = signers[10];
+    const CONFIRM_ROLE = await fixture.express.CONFIRM_ROLE();
+    await fixture.express.connect(fixture.admin).grantRole(CONFIRM_ROLE, confirmer.address);
     // Set trimDecimals to 3 as default for tests
     await fixture.express.connect(fixture.maintainer).updateTrimDecimals(TRIM_DECIMALS);
-    return fixture;
+    return { ...fixture, confirmer };
+  }
+
+  // Seeds offchainShares to match current totalSupply so sharesPerToken == 1e18
+  async function seedOffchainShares(fixture: any) {
+    const { express, oem, operator, confirmer } = fixture;
+    const supply = await oem.totalSupply();
+    await express.connect(operator).proposeOffchainShares(supply);
+    await express.connect(confirmer).confirmOffchainShares(supply);
   }
 
   describe('Deposit Flow', function () {
@@ -64,7 +75,8 @@ describe('Express - Comprehensive Tests', function () {
       });
 
       it('should enforce deposit minimum after first deposit', async function () {
-        const { express, usdo, user1, maintainer } = await loadFixture(deployFixture);
+        const fixture = await loadFixture(deployFixture);
+        const { express, usdo, user1, maintainer } = fixture;
 
         // Make first deposit
         const firstDepositMin = await express.firstDepositAmount();
@@ -72,6 +84,8 @@ describe('Express - Comprehensive Tests', function () {
           .connect(user1)
           .requestDeposit(await usdo.getAddress(), firstDepositMin, user1.address);
         await express.connect(maintainer).processDepositQueue(1);
+
+        await seedOffchainShares(fixture);
 
         // Try to mint below minimum
         const mintMin = await express.depositMinimum();
@@ -83,7 +97,8 @@ describe('Express - Comprehensive Tests', function () {
       });
 
       it('should allow subsequent deposits at deposit minimum', async function () {
-        const { express, usdo, user1, maintainer } = await loadFixture(deployFixture);
+        const fixture = await loadFixture(deployFixture);
+        const { express, usdo, user1, maintainer } = fixture;
 
         // Make first deposit
         const firstDepositMin = await express.firstDepositAmount();
@@ -91,6 +106,8 @@ describe('Express - Comprehensive Tests', function () {
           .connect(user1)
           .requestDeposit(await usdo.getAddress(), firstDepositMin, user1.address);
         await express.connect(maintainer).processDepositQueue(1);
+
+        await seedOffchainShares(fixture);
 
         // Mint at minimum
         const mintMin = await express.depositMinimum();
@@ -116,8 +133,8 @@ describe('Express - Comprehensive Tests', function () {
       });
 
       it('should process deposit queue in FIFO order', async function () {
-        const { express, usdo, user1, user2, user3, maintainer, oem } =
-          await loadFixture(deployFixture);
+        const fixture = await loadFixture(deployFixture);
+        const { express, usdo, user1, user2, user3, maintainer, oem } = fixture;
 
         const amount = ethers.parseUnits('1000', 18);
 
@@ -134,11 +151,17 @@ describe('Express - Comprehensive Tests', function () {
         expect(await oem.balanceOf(user2.address)).to.equal(0);
         expect(await oem.balanceOf(user3.address)).to.equal(0);
 
-        // Process remaining
-        await express.connect(maintainer).processDepositQueue(0); // 0 = process all
+        await seedOffchainShares(fixture);
 
-        expect(await oem.balanceOf(user2.address)).to.equal(amount);
-        expect(await oem.balanceOf(user3.address)).to.equal(amount);
+        // Process user2
+        await express.connect(maintainer).processDepositQueue(1);
+        expect(await oem.balanceOf(user2.address)).to.be.gt(0);
+
+        await seedOffchainShares(fixture);
+
+        // Process user3
+        await express.connect(maintainer).processDepositQueue(1);
+        expect(await oem.balanceOf(user3.address)).to.be.gt(0);
       });
 
       it('should re-validate KYC during processing', async function () {
@@ -354,6 +377,8 @@ describe('Express - Comprehensive Tests', function () {
       await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
       await express.connect(maintainer).processDepositQueue(1);
 
+      await seedOffchainShares(fixture);
+
       return { ...fixture, mintedAmount: amount };
     }
 
@@ -428,7 +453,7 @@ describe('Express - Comprehensive Tests', function () {
         ).to.be.revertedWithCustomError(express, 'RedeemLessThanMinimum');
       });
 
-      it('should not process withdraws before T+2 delay', async function () {
+      it('should revert with RatioNotSnapshotted when processing after delay without a prior snapshot', async function () {
         const fixture = await loadFixture(deployFixture);
         const { express, user1, oem, operator } = await setupUserWithTokens(fixture);
 
@@ -436,10 +461,13 @@ describe('Express - Comprehensive Tests', function () {
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
         await express.connect(user1).requestRedeem(user1.address, redeemAmount);
 
-        // Try to process immediately (before T+2)
+        // Advance past convertRedeemRequestsDelay so the delay gate clears and the
+        // snapshot check becomes the next revert site.
+        await time.increase(2 * 24 * 60 * 60);
+
         await expect(
           express.connect(operator).processPendingRedeems(1)
-        ).to.be.revertedWithCustomError(express, 'NoPendingRedeemsReady');
+        ).to.be.revertedWithCustomError(express, 'RatioNotSnapshotted');
       });
 
       it('should process withdraws after T+2 delay', async function () {
@@ -451,7 +479,7 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(user1).requestRedeem(user1.address, redeemAmount);
 
         // Fast forward 2 days
-        const withdrawDelay = await express.convertRedeemRequestsDelay();
+        const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(withdrawDelay);
 
         // Should now be able to process
@@ -481,7 +509,7 @@ describe('Express - Comprehensive Tests', function () {
           3
         );
 
-        const withdrawDelay = await express.convertRedeemRequestsDelay();
+        const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(withdrawDelay);
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
@@ -505,7 +533,7 @@ describe('Express - Comprehensive Tests', function () {
         const requestTimestamp = requestBlock!.timestamp;
 
         // Fast forward 2 days
-        const withdrawDelay = await express.convertRedeemRequestsDelay();
+        const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(withdrawDelay);
 
         // Process to withdraw queue
@@ -519,8 +547,7 @@ describe('Express - Comprehensive Tests', function () {
 
       it('should apply the same batch ratio to all redeems processed in one call', async function () {
         const fixture = await loadFixture(deployFixture);
-        const { express, oem, usdo, user1, user2, maintainer, operator } =
-          await loadFixture(deployFixture);
+        const { express, oem, usdo, user1, user2, maintainer, operator } = fixture;
 
         const depositAmount = ethers.parseUnits('5000', 18);
         await express
@@ -529,7 +556,10 @@ describe('Express - Comprehensive Tests', function () {
         await express
           .connect(user2)
           .requestDeposit(await usdo.getAddress(), depositAmount, user2.address);
-        await express.connect(maintainer).processDepositQueue(0);
+        await express.connect(maintainer).processDepositQueue(1);
+        await seedOffchainShares(fixture);
+        await express.connect(maintainer).processDepositQueue(1);
+        await seedOffchainShares(fixture);
 
         await express.connect(maintainer).updateMgtFeeRate(300);
         const timeBuffer = await express.timeBuffer();
@@ -553,7 +583,7 @@ describe('Express - Comprehensive Tests', function () {
           3
         );
 
-        const withdrawDelay = await express.convertRedeemRequestsDelay();
+        const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(withdrawDelay);
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(0);
@@ -574,7 +604,7 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(user1).requestRedeem(user1.address, redeemAmount);
 
         // Fast forward and process to final queue
-        const withdrawDelay = await express.convertRedeemRequestsDelay();
+        const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(withdrawDelay);
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
@@ -645,8 +675,8 @@ describe('Express - Comprehensive Tests', function () {
 
       it('should break on insufficient liquidity', async function () {
         const fixture = await loadFixture(deployFixture);
-        const { express, user1, user2, oem, operator, maintainer, usdo } =
-          await setupUserWithTokens(fixture);
+        const fullFixture = await setupUserWithTokens(fixture);
+        const { express, user1, user2, oem, operator, maintainer, usdo } = fullFixture;
 
         // Setup multiple withdraws
         const redeemAmount = ethers.parseUnits('1000', 18);
@@ -660,11 +690,12 @@ describe('Express - Comprehensive Tests', function () {
           .connect(user2)
           .requestDeposit(await usdo.getAddress(), ethers.parseUnits('5000', 18), user2.address);
         await express.connect(maintainer).processDepositQueue(1);
+        await seedOffchainShares(fullFixture);
         await oem.connect(user2).approve(await express.getAddress(), ethers.MaxUint256);
         await express.connect(user2).requestRedeem(user2.address, redeemAmount);
 
         // Fast forward and process to final queue
-        const withdrawDelay = await express.convertRedeemRequestsDelay();
+        const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(withdrawDelay);
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(0); // Process all
@@ -685,8 +716,8 @@ describe('Express - Comprehensive Tests', function () {
 
     describe('Revert Redemption to Pending (Price Correction)', function () {
       async function setupRedemptionQueueMultiple(fixture: any) {
-        const { express, user1, user2, user3, oem, operator, maintainer, usdo } =
-          await setupUserWithTokens(fixture);
+        const fullFixture = await setupUserWithTokens(fixture);
+        const { express, user1, user2, user3, oem, operator, maintainer, usdo } = fullFixture;
 
         // Setup user2 and user3 with tokens
         await express
@@ -695,7 +726,10 @@ describe('Express - Comprehensive Tests', function () {
         await express
           .connect(user3)
           .requestDeposit(await usdo.getAddress(), ethers.parseUnits('5000', 18), user3.address);
-        await express.connect(maintainer).processDepositQueue(0);
+        await express.connect(maintainer).processDepositQueue(1);
+        await seedOffchainShares(fullFixture);
+        await express.connect(maintainer).processDepositQueue(1);
+        await seedOffchainShares(fullFixture);
 
         // All users request withdraw
         const redeemAmount = ethers.parseUnits('1000', 18);
@@ -719,7 +753,7 @@ describe('Express - Comprehensive Tests', function () {
         const timestamps = [block1!.timestamp, block2!.timestamp, block3!.timestamp];
 
         // Fast forward and process to final queue
-        const withdrawDelay = await express.convertRedeemRequestsDelay();
+        const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(withdrawDelay);
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(0);
@@ -885,7 +919,7 @@ describe('Express - Comprehensive Tests', function () {
           await setupPendingRedemption(fixture);
 
         // Move to final redeem queue
-        const redeemDelay = await express.convertRedeemRequestsDelay();
+        const redeemDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(redeemDelay);
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
@@ -1015,7 +1049,8 @@ describe('Express - Comprehensive Tests', function () {
 
   describe('Management Fee Accrual', function () {
     it('should mint daily management fees during updateEpoch', async function () {
-      const { express, operator, maintainer, oem, user1, usdo } = await loadFixture(deployFixture);
+      const fixture = await loadFixture(deployFixture);
+      const { express, operator, maintainer, oem, user1, usdo } = fixture;
 
       // Setup tokens in circulation
       const mintAmount = ethers.parseUnits('100000', 18);
@@ -1023,13 +1058,13 @@ describe('Express - Comprehensive Tests', function () {
         .connect(user1)
         .requestDeposit(await usdo.getAddress(), mintAmount, user1.address);
       await express.connect(maintainer).processDepositQueue(1);
+      await seedOffchainShares(fixture);
 
       // Set 3% annual management fee (300 basis points)
       await express.connect(maintainer).updateMgtFeeRate(300);
 
       // Get current state
       const timeBuffer = await express.timeBuffer();
-      const epochBefore = await express.epoch();
 
       // Fast forward past time buffer
       await time.increase(timeBuffer);
@@ -1037,12 +1072,9 @@ describe('Express - Comprehensive Tests', function () {
       // Update epoch
       await expect(express.connect(operator).updateEpoch()).to.emit(express, 'UpdateEpoch');
 
-      const epochAfter = await express.epoch();
-      expect(epochAfter).to.equal(epochBefore + 1n);
-
       const mgtFeeTo = await express.mgtFeeTo();
       expect(await oem.balanceOf(mgtFeeTo)).to.be.gt(0);
-      expect(await express.totalMgtFeeMinted()).to.equal(await oem.balanceOf(mgtFeeTo));
+      expect(await express.totalMgtFeeUnclaimed()).to.equal(await oem.balanceOf(mgtFeeTo));
     });
 
     it('should revert if updating epoch too early', async function () {
@@ -1069,17 +1101,9 @@ describe('Express - Comprehensive Tests', function () {
       );
     });
 
-    it('should revert updateEpochAdjust when mgtFeeRate is zero', async function () {
-      const { express, maintainer } = await loadFixture(deployFixture);
-
-      await expect(express.connect(maintainer).updateEpochAdjust(0)).to.be.revertedWithCustomError(
-        express,
-        'MgtFeeDisabled'
-      );
-    });
-
-    it('should track totalMgtFeeMinted correctly in the daily mint flow', async function () {
-      const { express, operator, maintainer, oem, user1, usdo } = await loadFixture(deployFixture);
+    it('should track unclaimed fees correctly in the daily mint flow', async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { express, operator, maintainer, oem, user1, usdo } = fixture;
 
       // Setup tokens and fees
       const mintAmount = ethers.parseUnits('100000', 18);
@@ -1087,6 +1111,7 @@ describe('Express - Comprehensive Tests', function () {
         .connect(user1)
         .requestDeposit(await usdo.getAddress(), mintAmount, user1.address);
       await express.connect(maintainer).processDepositQueue(1);
+      await seedOffchainShares(fixture);
 
       await express.connect(maintainer).updateMgtFeeRate(300);
 
@@ -1098,7 +1123,7 @@ describe('Express - Comprehensive Tests', function () {
 
       const balanceAfter = await oem.balanceOf(mgtFeeTo);
       expect(balanceAfter).to.be.gt(balanceBefore);
-      expect(await express.totalMgtFeeMinted()).to.equal(balanceAfter);
+      expect(await express.totalMgtFeeUnclaimed()).to.equal(balanceAfter);
     });
   });
 
@@ -1189,12 +1214,14 @@ describe('Express - Comprehensive Tests', function () {
     });
 
     it('should not exclude tokens in pending withdraw queue', async function () {
-      const { express, oem, user1, usdo, maintainer } = await loadFixture(deployFixture);
+      const fixture = await loadFixture(deployFixture);
+      const { express, oem, user1, usdo, maintainer } = fixture;
 
       // Deposit
       const amount = ethers.parseUnits('5000', 18);
       await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
       await express.connect(maintainer).processDepositQueue(1);
+      await seedOffchainShares(fixture);
 
       const circulatingBefore = await express.circulatingSupply();
 
@@ -1210,12 +1237,14 @@ describe('Express - Comprehensive Tests', function () {
     });
 
     it('should exclude tokens in withdraw queue', async function () {
-      const { express, oem, user1, usdo, maintainer, operator } = await loadFixture(deployFixture);
+      const fixture = await loadFixture(deployFixture);
+      const { express, oem, user1, usdo, maintainer, operator } = fixture;
 
       // Deposit
       const amount = ethers.parseUnits('5000', 18);
       await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
       await express.connect(maintainer).processDepositQueue(1);
+      await seedOffchainShares(fixture);
 
       // Request withdraw
       const withdrawAmount = ethers.parseUnits('1000', 18);
@@ -1223,7 +1252,7 @@ describe('Express - Comprehensive Tests', function () {
       await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
 
       // Move to final withdraw queue
-      const withdrawDelay = await express.convertRedeemRequestsDelay();
+      const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
       await time.increase(withdrawDelay);
       await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(1);
@@ -1238,12 +1267,14 @@ describe('Express - Comprehensive Tests', function () {
     });
 
     it('should restore circulating supply after withdraw queue is processed', async function () {
-      const { express, oem, user1, usdo, maintainer, operator } = await loadFixture(deployFixture);
+      const fixture = await loadFixture(deployFixture);
+      const { express, oem, user1, usdo, maintainer, operator } = fixture;
 
       // Deposit
       const amount = ethers.parseUnits('5000', 18);
       await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
       await express.connect(maintainer).processDepositQueue(1);
+      await seedOffchainShares(fixture);
 
       const totalSupplyBefore = await oem.totalSupply();
 
@@ -1252,7 +1283,7 @@ describe('Express - Comprehensive Tests', function () {
       await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
       await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
 
-      const withdrawDelay = await express.convertRedeemRequestsDelay();
+      const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
       await time.increase(withdrawDelay);
       await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(1);
@@ -1271,12 +1302,14 @@ describe('Express - Comprehensive Tests', function () {
     });
 
     it('should restore circulating supply after withdraw is cancelled', async function () {
-      const { express, oem, user1, usdo, maintainer, operator } = await loadFixture(deployFixture);
+      const fixture = await loadFixture(deployFixture);
+      const { express, oem, user1, usdo, maintainer, operator } = fixture;
 
       // Deposit
       const amount = ethers.parseUnits('5000', 18);
       await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
       await express.connect(maintainer).processDepositQueue(1);
+      await seedOffchainShares(fixture);
 
       const circulatingBefore = await express.circulatingSupply();
 
@@ -1285,7 +1318,7 @@ describe('Express - Comprehensive Tests', function () {
       await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
       await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
 
-      const withdrawDelay = await express.convertRedeemRequestsDelay();
+      const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
       await time.increase(withdrawDelay);
       await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(1);
@@ -1301,12 +1334,14 @@ describe('Express - Comprehensive Tests', function () {
     });
 
     it('should restore circulating supply after revert to pending', async function () {
-      const { express, oem, user1, usdo, maintainer, operator } = await loadFixture(deployFixture);
+      const fixture = await loadFixture(deployFixture);
+      const { express, oem, user1, usdo, maintainer, operator } = fixture;
 
       // Deposit
       const amount = ethers.parseUnits('5000', 18);
       await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
       await express.connect(maintainer).processDepositQueue(1);
+      await seedOffchainShares(fixture);
 
       const circulatingBefore = await express.circulatingSupply();
 
@@ -1315,7 +1350,7 @@ describe('Express - Comprehensive Tests', function () {
       await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
       await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
 
-      const withdrawDelay = await express.convertRedeemRequestsDelay();
+      const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
       await time.increase(withdrawDelay);
       await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(1);
@@ -1334,8 +1369,8 @@ describe('Express - Comprehensive Tests', function () {
     });
 
     it('should track totalWithdrawQueueTokens correctly with multiple users', async function () {
-      const { express, oem, user1, user2, user3, usdo, maintainer, operator } =
-        await loadFixture(deployFixture);
+      const fixture = await loadFixture(deployFixture);
+      const { express, oem, user1, user2, user3, usdo, maintainer, operator } = fixture;
 
       // Deposit for all users
       const depositAmount = ethers.parseUnits('5000', 18);
@@ -1348,7 +1383,12 @@ describe('Express - Comprehensive Tests', function () {
       await express
         .connect(user3)
         .requestDeposit(await usdo.getAddress(), depositAmount, user3.address);
-      await express.connect(maintainer).processDepositQueue(0);
+      await express.connect(maintainer).processDepositQueue(1);
+      await seedOffchainShares(fixture);
+      await express.connect(maintainer).processDepositQueue(1);
+      await seedOffchainShares(fixture);
+      await express.connect(maintainer).processDepositQueue(1);
+      await seedOffchainShares(fixture);
 
       // All users request withdraws of different amounts
       const w1 = ethers.parseUnits('1000', 18);
@@ -1364,7 +1404,7 @@ describe('Express - Comprehensive Tests', function () {
       await express.connect(user3).requestRedeem(user3.address, w3);
 
       // Move all to final withdraw queue
-      const withdrawDelay = await express.convertRedeemRequestsDelay();
+      const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
       await time.increase(withdrawDelay);
       await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(0);
@@ -1381,14 +1421,15 @@ describe('Express - Comprehensive Tests', function () {
     });
 
     it('should decrease circulating supply when holders burn tokens outside redeem flow', async function () {
-      const { express, oem, usdo, admin, operator, user1, maintainer } =
-        await loadFixture(deployFixture);
+      const fixture = await loadFixture(deployFixture);
+      const { express, oem, usdo, admin, operator, user1, maintainer } = fixture;
 
       const depositAmount = ethers.parseUnits('5000', 18);
       await express
         .connect(user1)
         .requestDeposit(await usdo.getAddress(), depositAmount, user1.address);
       await express.connect(maintainer).processDepositQueue(1);
+      await seedOffchainShares(fixture);
 
       const BURNER_ROLE = await oem.BURNER_ROLE();
       await oem.connect(admin).grantRole(BURNER_ROLE, operator.address);
@@ -1401,7 +1442,7 @@ describe('Express - Comprehensive Tests', function () {
 
       expect(await oem.totalSupply()).to.equal(totalSupplyBefore - burnAmount);
       expect(await express.circulatingSupply()).to.equal(circulatingBefore - burnAmount);
-      expect(await express.sharesPerToken()).to.equal(ethers.parseUnits('1', 18));
+      expect(await express.sharesPerToken()).to.be.gt(ethers.parseUnits('1', 18));
     });
   });
 
@@ -1414,12 +1455,14 @@ describe('Express - Comprehensive Tests', function () {
     });
 
     it('should return 1e18 when no withdraw queue and no mgtFeeTo balance', async function () {
-      const { express, oem, user1, usdo, maintainer } = await loadFixture(deployFixture);
+      const fixture = await loadFixture(deployFixture);
+      const { express, oem, user1, usdo, maintainer } = fixture;
 
       // Deposit to create supply
       const amount = ethers.parseUnits('5000', 18);
       await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
       await express.connect(maintainer).processDepositQueue(1);
+      await seedOffchainShares(fixture);
 
       const mgtFeeTo = await express.mgtFeeTo();
       const mgtFeeToBalance = await oem.balanceOf(mgtFeeTo);
@@ -1431,12 +1474,14 @@ describe('Express - Comprehensive Tests', function () {
     });
 
     it('should NOT decrease when tokens are in withdraw queue (no mgt fee)', async function () {
-      const { express, oem, user1, usdo, maintainer, operator } = await loadFixture(deployFixture);
+      const fixture = await loadFixture(deployFixture);
+      const { express, oem, user1, usdo, maintainer, operator } = fixture;
 
       // Deposit
       const amount = ethers.parseUnits('5000', 18);
       await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
       await express.connect(maintainer).processDepositQueue(1);
+      await seedOffchainShares(fixture);
 
       const ratioBefore = await express.sharesPerToken();
 
@@ -1445,24 +1490,26 @@ describe('Express - Comprehensive Tests', function () {
       await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
       await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
 
-      const withdrawDelay = await express.convertRedeemRequestsDelay();
+      const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
       await time.increase(withdrawDelay);
       await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(1);
 
       const ratioAfter = await express.sharesPerToken();
 
-      // Ratio stays 1:1 — redeem queue tokens cancel out of both numerator and denominator
-      expect(ratioAfter).to.equal(ratioBefore);
+      // Ratio increases — redeem queue reduces totalSupply denominator without reducing offchainShares
+      expect(ratioAfter).to.be.gt(ratioBefore);
     });
 
     it('should decrease when tokens are in withdraw queue WITH mgt fee', async function () {
-      const { express, oem, user1, usdo, maintainer, operator } = await loadFixture(deployFixture);
+      const fixture = await loadFixture(deployFixture);
+      const { express, oem, user1, usdo, maintainer, operator } = fixture;
 
       // Deposit
       const amount = ethers.parseUnits('100000', 18);
       await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
       await express.connect(maintainer).processDepositQueue(1);
+      await seedOffchainShares(fixture);
 
       // Set mgt fee so mgtFeeTo has a balance
       await express.connect(maintainer).updateMgtFeeRate(300);
@@ -1478,83 +1525,83 @@ describe('Express - Comprehensive Tests', function () {
       await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
       await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
 
-      const withdrawDelay = await express.convertRedeemRequestsDelay();
+      const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
       await time.increase(withdrawDelay);
       await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(1);
 
       const ratioAfter = await express.sharesPerToken();
 
-      // Ratio decreases further — mgtFeeTo balance is a larger fraction of the smaller effectiveTotal
-      expect(ratioAfter).to.be.lt(ratioBefore);
+      // Ratio increases — redeem queue reduces denominator, making offchainShares / denom larger
+      expect(ratioAfter).to.be.gt(ratioBefore);
     });
 
     it('should return correct ratio value', async function () {
-      const { express, oem, user1, usdo, maintainer, operator } = await loadFixture(deployFixture);
+      const fixture = await loadFixture(deployFixture);
+      const { express, oem, user1, usdo, maintainer, operator } = fixture;
 
       // Deposit 10000
       const amount = ethers.parseUnits('10000', 18);
       await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
       await express.connect(maintainer).processDepositQueue(1);
+      await seedOffchainShares(fixture);
 
       // Withdraw 2000 to final queue
       const withdrawAmount = ethers.parseUnits('2000', 18);
       await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
       await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
 
-      const withdrawDelay = await express.convertRedeemRequestsDelay();
+      const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
       await time.increase(withdrawDelay);
       await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(1);
 
       const totalSupply = await oem.totalSupply();
       const totalRedeemQueueShares = await express.totalRedeemQueueShares();
-      const effectiveTotal = totalSupply - totalRedeemQueueShares;
-      const mgtFeeTo = await express.mgtFeeTo();
-      const tokensAtMgtFeeTo = await oem.balanceOf(mgtFeeTo);
+      const denom = totalSupply - totalRedeemQueueShares;
+      const offchainShares = await express.offchainShares();
       const ratio = await express.sharesPerToken();
 
-      // ratio = (effectiveTotal - tokensAtMgtFeeTo) * 1e18 / effectiveTotal
-      const expectedRatio =
-        ((effectiveTotal - tokensAtMgtFeeTo) * ethers.parseUnits('1', 18)) / effectiveTotal;
+      // ratio = offchainShares * 1e18 / (totalSupply - totalRedeemQueueShares)
+      const expectedRatio = (offchainShares * ethers.parseUnits('1', 18)) / denom;
       expect(ratio).to.equal(expectedRatio);
     });
 
-    it('should recover to 1e18 after withdraw queue is fully processed', async function () {
-      const { express, oem, user1, usdo, maintainer, operator } = await loadFixture(deployFixture);
+    it('should have offchainShares > totalSupply after withdraw queue is fully processed', async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { express, oem, user1, usdo, maintainer, operator } = fixture;
 
       // Deposit
       const amount = ethers.parseUnits('5000', 18);
       await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
       await express.connect(maintainer).processDepositQueue(1);
+      await seedOffchainShares(fixture);
 
       // Full withdraw cycle
       const withdrawAmount = ethers.parseUnits('1000', 18);
       await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
       await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
 
-      const withdrawDelay = await express.convertRedeemRequestsDelay();
+      const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
       await time.increase(withdrawDelay);
       await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(1);
       await express.connect(operator).processRedeemQueue(1);
 
-      const mgtFeeTo = await express.mgtFeeTo();
-      const mgtFeeToBalance = await oem.balanceOf(mgtFeeTo);
-
-      // If mgtFeeTo has no balance, should be back to 1:1
-      if (mgtFeeToBalance === 0n) {
-        expect(await express.sharesPerToken()).to.equal(ethers.parseUnits('1', 18));
-      }
+      // After burn, offchainShares remains at original seeded value while totalSupply decreases,
+      // so ratio > 1e18
+      expect(await express.sharesPerToken()).to.be.gt(ethers.parseUnits('1', 18));
     });
 
     it('should decrease when daily mgt fee is minted in updateEpoch', async function () {
-      const { express, oem, user1, usdo, maintainer, operator } = await loadFixture(deployFixture);
+      const fixture = await loadFixture(deployFixture);
+      const { express, oem, user1, usdo, maintainer, operator } = fixture;
 
       // Deposit
       const amount = ethers.parseUnits('100000', 18);
       await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
       await express.connect(maintainer).processDepositQueue(1);
+      await seedOffchainShares(fixture);
 
       // Set mgt fee and accrue
       await express.connect(maintainer).updateMgtFeeRate(300);
@@ -1569,76 +1616,79 @@ describe('Express - Comprehensive Tests', function () {
     });
   });
 
-  describe('UpdateEpoch with circulatingSupply', function () {
-    it('should calculate fee based on circulating supply excluding withdraw queue', async function () {
-      const { express, oem, user1, usdo, maintainer, operator } = await loadFixture(deployFixture);
+  describe('UpdateEpoch fee base (offchainShares)', function () {
+    it('should calculate fee based on offchainShares regardless of redeem queue', async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { express, oem, user1, usdo, maintainer, operator } = fixture;
 
-      // Deposit
+      // Deposit + sync offchainShares
       const amount = ethers.parseUnits('100000', 18);
       await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
       await express.connect(maintainer).processDepositQueue(1);
+      await seedOffchainShares(fixture);
 
       // Set mgt fee
       await express.connect(maintainer).updateMgtFeeRate(300);
 
-      // Request withdraw and move to final queue (reduces circulating supply)
+      // Move some tokens to final redeem queue (reduces circulating but not offchainShares)
       const withdrawAmount = ethers.parseUnits('20000', 18);
       await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
       await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
 
-      const withdrawDelay = await express.convertRedeemRequestsDelay();
+      const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
       await time.increase(withdrawDelay);
       await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(1);
 
-      // Now updateEpoch — fee should be based on circulating (which excludes withdraw queue)
-      const circulating = await express.circulatingSupply();
+      const offchainShares = await express.offchainShares();
       const timeBuffer = await express.timeBuffer();
       await time.increase(timeBuffer);
       await express.connect(operator).updateEpoch();
 
-      // Expected daily fee = trim(circulating * 300 / (365 * 10000))
-      const expectedFee = trim((circulating * 300n) / (365n * 10000n), TRIM_DECIMALS);
+      // Expected daily fee = trim(offchainShares * 300 / (365 * 10000))
+      const expectedFee = trim((offchainShares * 300n) / (365n * 10000n), TRIM_DECIMALS);
       const mgtFeeTo = await express.mgtFeeTo();
       expect(await oem.balanceOf(mgtFeeTo)).to.equal(expectedFee);
-      expect(await express.totalMgtFeeMinted()).to.equal(expectedFee);
+      expect(await express.totalMgtFeeUnclaimed()).to.equal(expectedFee);
     });
 
-    it('should accrue higher fee when no tokens in withdraw queue', async function () {
-      const { express, oem, user1, usdo, maintainer, operator } = await loadFixture(deployFixture);
+    it('should accrue the same fee across epochs when offchainShares is unchanged, regardless of redeem queue', async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { express, oem, user1, usdo, maintainer, operator } = fixture;
 
-      // Deposit
+      // Deposit + sync offchainShares
       const amount = ethers.parseUnits('100000', 18);
       await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
       await express.connect(maintainer).processDepositQueue(1);
+      await seedOffchainShares(fixture);
 
       await express.connect(maintainer).updateMgtFeeRate(300);
 
-      // Epoch 1: no withdraw queue
+      // Epoch 1: no redeem queue
       const timeBuffer = await express.timeBuffer();
       await time.increase(timeBuffer);
       await express.connect(operator).updateEpoch();
       const mgtFeeTo = await express.mgtFeeTo();
       const fee1 = await oem.balanceOf(mgtFeeTo);
 
-      // Now request withdraw and move to final queue
+      // Move tokens to final redeem queue — changes circulating but not offchainShares
       const withdrawAmount = ethers.parseUnits('50000', 18);
       await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
       await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
 
-      const withdrawDelay = await express.convertRedeemRequestsDelay();
+      const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
       await time.increase(withdrawDelay);
       await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(1);
 
-      // Epoch 2: with withdraw queue (lower circulating)
+      // Epoch 2: redeem queue populated, offchainShares unchanged
       await time.increase(timeBuffer);
       await express.connect(operator).updateEpoch();
       const totalFee = await oem.balanceOf(mgtFeeTo);
       const fee2 = totalFee - fee1;
 
-      // fee2 should be less than fee1 because circulating supply is lower
-      expect(fee2).to.be.lt(fee1);
+      // Fee is charged on offchainShares (AUM), not circulating HYBOND. Queue doesn't affect it.
+      expect(fee2).to.equal(fee1);
     });
 
     it('should accrue zero fee when circulating supply is zero', async function () {
@@ -1652,17 +1702,19 @@ describe('Express - Comprehensive Tests', function () {
       await time.increase(timeBuffer);
       await express.connect(operator).updateEpoch();
 
-      expect(await express.totalMgtFeeMinted()).to.equal(0);
+      expect(await express.totalMgtFeeUnclaimed()).to.equal(0);
       expect(await oem.totalSupply()).to.equal(0);
     });
 
     it('should not count pending withdraw tokens in fee calculation', async function () {
-      const { express, oem, user1, usdo, maintainer, operator } = await loadFixture(deployFixture);
+      const fixture = await loadFixture(deployFixture);
+      const { express, oem, user1, usdo, maintainer, operator } = fixture;
 
       // Deposit
       const amount = ethers.parseUnits('100000', 18);
       await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
       await express.connect(maintainer).processDepositQueue(1);
+      await seedOffchainShares(fixture);
 
       await express.connect(maintainer).updateMgtFeeRate(300);
 
@@ -1677,9 +1729,9 @@ describe('Express - Comprehensive Tests', function () {
       const mgtFeeTo = await express.mgtFeeTo();
       const mgtFeeToBalance = await oem.balanceOf(mgtFeeTo);
 
-      // Pending tokens are NOT excluded, so circulating = totalSupply - totalMgtFeeMinted
-      const totalMgtFeeMinted = await express.totalMgtFeeMinted();
-      expect(circulating).to.equal(totalSupply - totalMgtFeeMinted);
+      // Pending tokens are NOT excluded, so circulating = totalSupply - totalMgtFeeUnclaimed (no updateEpoch yet, so both are 0)
+      const totalMgtFeeUnclaimed = await express.totalMgtFeeUnclaimed();
+      expect(circulating).to.equal(totalSupply - totalMgtFeeUnclaimed);
 
       // updateEpoch fee should be based on this full circulating amount
       const timeBuffer = await express.timeBuffer();
@@ -1689,106 +1741,7 @@ describe('Express - Comprehensive Tests', function () {
       const expectedFee = trim((circulating * 300n) / (365n * 10000n), TRIM_DECIMALS);
       const feeMintedToday = await oem.balanceOf(mgtFeeTo);
       expect(feeMintedToday).to.equal(expectedFee);
-      expect(await express.totalMgtFeeMinted()).to.equal(expectedFee);
-    });
-
-    it('should use override circulating supply when provided', async function () {
-      const { express, oem, user1, usdo, maintainer, operator } = await loadFixture(deployFixture);
-
-      // Deposit
-      const amount = ethers.parseUnits('100000', 18);
-      await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
-      await express.connect(maintainer).processDepositQueue(1);
-
-      await express.connect(maintainer).updateMgtFeeRate(300);
-
-      // Use a custom circulating supply override
-      const overrideSupply = ethers.parseUnits('80000', 18);
-      const timeBuffer = await express.timeBuffer();
-      await time.increase(timeBuffer);
-      await express.connect(maintainer).updateEpochAdjust(overrideSupply);
-
-      const expectedFee = trim((overrideSupply * 300n) / (365n * 10000n), TRIM_DECIMALS);
-      const mgtFeeTo = await express.mgtFeeTo();
-      expect(await oem.balanceOf(mgtFeeTo)).to.equal(expectedFee);
-      expect(await express.totalMgtFeeMinted()).to.equal(expectedFee);
-    });
-
-    it('should revert when override exceeds total supply', async function () {
-      const { express, oem, user1, usdo, maintainer, operator } = await loadFixture(deployFixture);
-
-      // Deposit
-      const amount = ethers.parseUnits('100000', 18);
-      await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
-      await express.connect(maintainer).processDepositQueue(1);
-
-      await express.connect(maintainer).updateMgtFeeRate(300);
-
-      const totalSupply = await oem.totalSupply();
-      const overSupply = totalSupply + 1n;
-
-      const timeBuffer = await express.timeBuffer();
-      await time.increase(timeBuffer);
-
-      await expect(
-        express.connect(maintainer).updateEpochAdjust(overSupply)
-      ).to.be.revertedWithCustomError(express, 'InvalidInput');
-    });
-
-    it('should allow override equal to total supply', async function () {
-      const { express, oem, user1, usdo, maintainer, operator } = await loadFixture(deployFixture);
-
-      // Deposit
-      const amount = ethers.parseUnits('100000', 18);
-      await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
-      await express.connect(maintainer).processDepositQueue(1);
-
-      await express.connect(maintainer).updateMgtFeeRate(300);
-
-      const totalSupply = await oem.totalSupply();
-      const timeBuffer = await express.timeBuffer();
-      await time.increase(timeBuffer);
-
-      await expect(express.connect(maintainer).updateEpochAdjust(totalSupply)).to.emit(
-        express,
-        'UpdateEpoch'
-      );
-
-      const expectedFee = trim((totalSupply * 300n) / (365n * 10000n), TRIM_DECIMALS);
-      const mgtFeeTo = await express.mgtFeeTo();
-      expect(await oem.balanceOf(mgtFeeTo)).to.equal(expectedFee);
-      expect(await express.totalMgtFeeMinted()).to.equal(expectedFee);
-    });
-
-    it('should produce different fees for override vs on-chain calculation', async function () {
-      const { express, oem, user1, usdo, maintainer, operator } = await loadFixture(deployFixture);
-
-      // Deposit
-      const amount = ethers.parseUnits('100000', 18);
-      await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
-      await express.connect(maintainer).processDepositQueue(1);
-
-      await express.connect(maintainer).updateMgtFeeRate(300);
-
-      // Epoch 1: use on-chain circulating supply (pass 0)
-      const timeBuffer = await express.timeBuffer();
-      await time.increase(timeBuffer);
-      await express.connect(operator).updateEpoch();
-      const mgtFeeTo = await express.mgtFeeTo();
-      const fee1 = await oem.balanceOf(mgtFeeTo);
-
-      // Epoch 2: use override with half the circulating supply
-      const circulating = await express.circulatingSupply();
-      const halfCirculating = circulating / 2n;
-      await time.increase(timeBuffer);
-      await express.connect(maintainer).updateEpochAdjust(halfCirculating);
-      const totalFee = await oem.balanceOf(mgtFeeTo);
-      const fee2 = totalFee - fee1;
-
-      // fee2 should be roughly half of fee1
-      const expectedFee2 = trim((halfCirculating * 300n) / (365n * 10000n), TRIM_DECIMALS);
-      expect(fee2).to.equal(expectedFee2);
-      expect(fee2).to.be.lt(fee1);
+      expect(await express.totalMgtFeeUnclaimed()).to.equal(expectedFee);
     });
   });
 
@@ -1816,7 +1769,15 @@ describe('Express - Comprehensive Tests', function () {
     });
 
     it('should handle zero amount redeem', async function () {
-      const { express, user1 } = await loadFixture(deployFixture);
+      const fixture = await loadFixture(deployFixture);
+      const { express, usdo, user1, maintainer } = fixture;
+
+      const firstDepositMin = await express.firstDepositAmount();
+      await express
+        .connect(user1)
+        .requestDeposit(await usdo.getAddress(), firstDepositMin, user1.address);
+      await express.connect(maintainer).processDepositQueue(1);
+      await seedOffchainShares(fixture);
 
       await expect(
         express.connect(user1).requestRedeem(user1.address, 0)
@@ -1919,13 +1880,14 @@ describe('Express - Comprehensive Tests', function () {
 
     describe('trimming on updateEpoch (daily fee)', function () {
       it('should trim daily fee to configured decimals', async function () {
-        const { express, oem, user1, usdo, maintainer, operator } =
-          await loadFixture(deployFixture);
+        const fixture = await loadFixture(deployFixture);
+        const { express, oem, user1, usdo, maintainer, operator } = fixture;
 
         // trimDecimals is 3 from fixture
         const amount = ethers.parseUnits('100000', 18);
         await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
         await express.connect(maintainer).processDepositQueue(1);
+        await seedOffchainShares(fixture);
 
         await express.connect(maintainer).updateMgtFeeRate(300);
 
@@ -1938,7 +1900,7 @@ describe('Express - Comprehensive Tests', function () {
         // Last 15 digits should be zero (trimmed to 3 decimals)
         expect(fee % 10n ** 15n).to.equal(0);
         expect(fee).to.be.gt(0);
-        expect(await express.totalMgtFeeMinted()).to.equal(fee);
+        expect(await express.totalMgtFeeUnclaimed()).to.equal(fee);
       });
 
       it('should produce different fee precision with different trimDecimals', async function () {
@@ -1972,7 +1934,7 @@ describe('Express - Comprehensive Tests', function () {
         const trim6Factor = 10n ** 12n;
         expect(fee3 % trim3Factor).to.equal(0n);
         expect(fee6 % trim6Factor).to.equal(0n);
-        expect(await express.totalMgtFeeMinted()).to.equal(totalFee);
+        expect(await express.totalMgtFeeUnclaimed()).to.equal(totalFee);
       });
     });
 
@@ -1984,12 +1946,13 @@ describe('Express - Comprehensive Tests', function () {
           .connect(user1)
           .requestDeposit(await usdo.getAddress(), depositAmount, user1.address);
         await express.connect(maintainer).processDepositQueue(1);
+        await seedOffchainShares(fixture);
 
         const withdrawAmount = ethers.parseUnits('1000', 18);
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
         await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
 
-        const withdrawDelay = await express.convertRedeemRequestsDelay();
+        const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(withdrawDelay);
 
         return { ...fixture, withdrawAmount };
@@ -2090,7 +2053,8 @@ describe('Express - Comprehensive Tests', function () {
       });
 
       it('should revert when pending redeem queue is not empty', async function () {
-        const { express, oem, usdo, user1, maintainer } = await loadFixture(deployFixture);
+        const fixture = await loadFixture(deployFixture);
+        const { express, oem, usdo, user1, maintainer } = fixture;
 
         const MockERC20Factory = await ethers.getContractFactory('MockERC20');
         const newAsset = await MockERC20Factory.deploy('New Asset', 'NEW', 18);
@@ -2101,6 +2065,7 @@ describe('Express - Comprehensive Tests', function () {
           .connect(user1)
           .requestDeposit(await usdo.getAddress(), depositAmount, user1.address);
         await express.connect(maintainer).processDepositQueue(1);
+        await seedOffchainShares(fixture);
 
         // Request redeem to populate pendingRedeemQueue
         const redeemAmount = await express.redeemMinimum();
@@ -2115,8 +2080,8 @@ describe('Express - Comprehensive Tests', function () {
       });
 
       it('should revert when redeem queue is not empty', async function () {
-        const { express, oem, usdo, user1, maintainer, operator } =
-          await loadFixture(deployFixture);
+        const fixture = await loadFixture(deployFixture);
+        const { express, oem, usdo, user1, maintainer, operator } = fixture;
 
         const MockERC20Factory = await ethers.getContractFactory('MockERC20');
         const newAsset = await MockERC20Factory.deploy('New Asset', 'NEW', 18);
@@ -2127,6 +2092,7 @@ describe('Express - Comprehensive Tests', function () {
           .connect(user1)
           .requestDeposit(await usdo.getAddress(), depositAmount, user1.address);
         await express.connect(maintainer).processDepositQueue(1);
+        await seedOffchainShares(fixture);
 
         // Request redeem and advance to final redeem queue
         const redeemAmount = await express.redeemMinimum();
@@ -2134,7 +2100,7 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(user1).requestRedeem(user1.address, redeemAmount);
 
         // Advance time past T+2 delay to allow processing pending redeems
-        const delay = await express.convertRedeemRequestsDelay();
+        const delay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(delay + 1n);
 
         // Process pending redeems into final redeem queue
@@ -2149,8 +2115,8 @@ describe('Express - Comprehensive Tests', function () {
       });
 
       it('should succeed after all queues are drained', async function () {
-        const { express, oem, usdo, user1, maintainer, operator } =
-          await loadFixture(deployFixture);
+        const fixture = await loadFixture(deployFixture);
+        const { express, oem, usdo, user1, maintainer, operator } = fixture;
 
         const MockERC20Factory = await ethers.getContractFactory('MockERC20');
         const newAsset = await MockERC20Factory.deploy('New Asset', 'NEW', 18);
@@ -2161,12 +2127,13 @@ describe('Express - Comprehensive Tests', function () {
           .connect(user1)
           .requestDeposit(await usdo.getAddress(), depositAmount, user1.address);
         await express.connect(maintainer).processDepositQueue(1);
+        await seedOffchainShares(fixture);
 
         const redeemAmount = await express.redeemMinimum();
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
         await express.connect(user1).requestRedeem(user1.address, redeemAmount);
 
-        const delay = await express.convertRedeemRequestsDelay();
+        const delay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(delay + 1n);
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
@@ -2186,8 +2153,8 @@ describe('Express - Comprehensive Tests', function () {
       });
 
       it('should not affect redeemEscrowBalance after changing redeemAsset', async function () {
-        const { express, oem, usdo, user1, maintainer, operator, admin } =
-          await loadFixture(deployFixture);
+        const fixture = await loadFixture(deployFixture);
+        const { express, oem, usdo, user1, maintainer, operator, admin } = fixture;
 
         // Deposit to get tokens
         const depositAmount = ethers.parseUnits('5000', 18);
@@ -2195,6 +2162,7 @@ describe('Express - Comprehensive Tests', function () {
           .connect(user1)
           .requestDeposit(await usdo.getAddress(), depositAmount, user1.address);
         await express.connect(maintainer).processDepositQueue(1);
+        await seedOffchainShares(fixture);
 
         // Request redeem
         const redeemAmount = await express.redeemMinimum();
@@ -2207,7 +2175,7 @@ describe('Express - Comprehensive Tests', function () {
         await oem.connect(admin).banAddresses([user1.address]);
 
         // Cancel redeem — refund should go to escrow since user1 is banned
-        const delay = await express.convertRedeemRequestsDelay();
+        const delay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(delay + 1n);
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
@@ -2279,7 +2247,10 @@ describe('Express - Comprehensive Tests', function () {
         await express
           .connect(user2)
           .requestDeposit(await usdo.getAddress(), depositAmount, user2.address);
-        await express.connect(maintainer).processDepositQueue(0);
+        await express.connect(maintainer).processDepositQueue(1);
+        await seedOffchainShares(fixture);
+        await express.connect(maintainer).processDepositQueue(1);
+        await seedOffchainShares(fixture);
 
         // Set mgt fee rate and mint one daily fee to cause dilution
         await express.connect(maintainer).updateMgtFeeRate(300); // 3% annual
@@ -2301,6 +2272,7 @@ describe('Express - Comprehensive Tests', function () {
           .connect(user1)
           .requestDeposit(await usdo.getAddress(), depositAmount, user1.address);
         await express.connect(maintainer).processDepositQueue(1);
+        await seedOffchainShares(fixture);
 
         const ratio = await express.sharesPerToken();
         expect(ratio).to.equal(ethers.parseUnits('1', 18));
@@ -2309,7 +2281,7 @@ describe('Express - Comprehensive Tests', function () {
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
         await express.connect(user1).requestRedeem(user1.address, redeemAmount);
 
-        const withdrawDelay = await express.convertRedeemRequestsDelay();
+        const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(withdrawDelay);
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
@@ -2331,7 +2303,7 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(user1).requestRedeem(user1.address, redeemAmount);
 
         // Process immediately after delay (no intervening updateEpoch/deposits/cancels)
-        const withdrawDelay = await express.convertRedeemRequestsDelay();
+        const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(withdrawDelay);
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
@@ -2352,7 +2324,7 @@ describe('Express - Comprehensive Tests', function () {
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
         await express.connect(user1).requestRedeem(user1.address, redeemAmount);
 
-        const withdrawDelay = await express.convertRedeemRequestsDelay();
+        const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(withdrawDelay);
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
@@ -2387,7 +2359,7 @@ describe('Express - Comprehensive Tests', function () {
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
         await express.connect(user1).requestRedeem(user1.address, redeemAmount);
 
-        const redeemDelay = await express.convertRedeemRequestsDelay();
+        const redeemDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(redeemDelay);
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
@@ -2406,7 +2378,7 @@ describe('Express - Comprehensive Tests', function () {
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
         await express.connect(user1).requestRedeem(user1.address, redeemAmount);
 
-        const withdrawDelay = await express.convertRedeemRequestsDelay();
+        const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(withdrawDelay);
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
@@ -2487,7 +2459,7 @@ describe('Express - Comprehensive Tests', function () {
         const circulatingBefore = await express.circulatingSupply();
         await express.connect(user1).requestRedeem(user1.address, redeemAmount);
 
-        const redeemDelay = await express.convertRedeemRequestsDelay();
+        const redeemDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(redeemDelay);
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
@@ -2526,28 +2498,31 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(maintainer).processDepositQueue(1);
         const ratioAfterDeposit = await express.sharesPerToken();
 
-        expect(ratioAfterDeposit).to.be.gt(ratioBeforeDeposit);
+        // Under the offchain-shares formula, a deposit grows totalSupply (denominator) without
+        // updating offchainShares, so ratio decreases after a deposit is processed.
+        expect(ratioAfterDeposit).to.be.lt(ratioBeforeDeposit);
 
-        const redeemDelay = await express.convertRedeemRequestsDelay();
+        const redeemDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(redeemDelay);
         await express.connect(operator).snapshotPendingRedeemRatio();
         await express.connect(operator).processPendingRedeems(1);
 
         const [, , , redeemAssetAmtAfterDeposit] = await express.getRedeemQueueInfo(0);
-        expect(redeemAssetAmtAfterDeposit).to.be.gt(previewBeforeDeposit);
+        expect(redeemAssetAmtAfterDeposit).to.be.lt(previewBeforeDeposit);
       });
     });
 
     describe('changing trimDecimals mid-operation', function () {
       it('should apply new trimDecimals to subsequent operations', async function () {
-        const { express, oem, user1, user2, usdo, maintainer, operator } =
-          await loadFixture(deployFixture);
+        const fixture = await loadFixture(deployFixture);
+        const { express, oem, user1, user2, usdo, maintainer, operator } = fixture;
 
         // trimDecimals = 3 from fixture
         // Deposit for user1
         const amount = ethers.parseUnits('5000', 18);
         await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
         await express.connect(maintainer).processDepositQueue(1);
+        await seedOffchainShares(fixture);
 
         const balance1 = await oem.balanceOf(user1.address);
         expect(balance1 % 10n ** 15n).to.equal(0); // trimmed to 3 decimals

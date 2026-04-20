@@ -65,8 +65,16 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   const txFeeTo = txFeeToConfig === ethers.ZeroAddress ? deployer : txFeeToConfig;
   const mgtFeeToConfig = getConfigValue<string>(expressConfig, 'mgtFeeTo');
   const mgtFeeTo = mgtFeeToConfig === ethers.ZeroAddress ? deployer : mgtFeeToConfig;
-  const depositMinimum = ethers.parseUnits(getConfigValue<string>(expressConfig, 'depositMinimum'), 18);
-  const redeemMinimum = ethers.parseUnits(getConfigValue<string>(expressConfig, 'redeemMinimum'), 18);
+  const confirmerConfig = getConfigValue<string>(expressConfig, 'confirmer');
+  const confirmer = confirmerConfig === ethers.ZeroAddress ? deployer : confirmerConfig;
+  const depositMinimum = ethers.parseUnits(
+    getConfigValue<string>(expressConfig, 'depositMinimum'),
+    18
+  );
+  const redeemMinimum = ethers.parseUnits(
+    getConfigValue<string>(expressConfig, 'redeemMinimum'),
+    18
+  );
   const firstDepositAmount = ethers.parseUnits(
     getConfigValue<string>(expressConfig, 'firstDepositAmount'),
     18
@@ -117,10 +125,42 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
     const grantBurnerTx = await hybond.grantRole(BURNER_ROLE, expressAddress);
     await grantBurnerTx.wait();
     console.log('✅ BURNER_ROLE granted to Express');
+
+    console.log('\n4️⃣ Granting CONFIRM_ROLE to confirmer...');
+    const CONFIRM_ROLE = await express.CONFIRM_ROLE();
+    const grantConfirmTx = await express.grantRole(CONFIRM_ROLE, confirmer);
+    await grantConfirmTx.wait();
+    console.log('✅ CONFIRM_ROLE granted to', confirmer);
+
+    console.log('\n5️⃣ Granting MAINTAINER_ROLE to deployer for initial configuration...');
+    const MAINTAINER_ROLE = await express.MAINTAINER_ROLE();
+    const grantMaintainerTx = await express.grantRole(MAINTAINER_ROLE, deployer);
+    await grantMaintainerTx.wait();
+    console.log('✅ MAINTAINER_ROLE granted to deployer');
+
+    // Default timing parameters. Overridable later via MAINTAINER_ROLE.
+    const DEFAULT_CONVERT_REDEEM_DELAY = 2 * 24 * 60 * 60; // 2 days (T+2)
+    const DEFAULT_TIME_BUFFER = 72000; // 20 hours
+
+    console.log(
+      `\n6️⃣ Setting convertRedeemRequestsDelay = ${DEFAULT_CONVERT_REDEEM_DELAY}s (T+2)...`
+    );
+    const setDelayTx = await express.updateConvertRedeemRequestsDelay(DEFAULT_CONVERT_REDEEM_DELAY);
+    await setDelayTx.wait();
+    console.log('✅ convertRedeemRequestsDelay set');
+
+    console.log(`\n7️⃣ Setting timeBuffer = ${DEFAULT_TIME_BUFFER}s (20 hours)...`);
+    const setTimeBufferTx = await express.updateTimeBuffer(DEFAULT_TIME_BUFFER);
+    await setTimeBufferTx.wait();
+    console.log('✅ timeBuffer set');
   } else {
     console.log('\n2️⃣ Skipping HYBOND role grants');
     console.log(
       '⚠️  Common.admin is not the deployer. The HYBOND admin must grant MINTER_ROLE and BURNER_ROLE to Express manually.'
+    );
+    console.log('⚠️  CONFIRM_ROLE grant skipped — admin is not deployer.');
+    console.log(
+      '⚠️  ACTION REQUIRED post-deploy: grant MAINTAINER_ROLE, then call updateConvertRedeemRequestsDelay(172800) and updateTimeBuffer(72000). Without these, the T+N gate is bypassed and epoch rate-limit is absent.'
     );
   }
 
@@ -139,6 +179,7 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   console.log('Treasury:', treasury);
   console.log('Transaction Fee To:', txFeeTo);
   console.log('Management Fee To:', mgtFeeTo);
+  console.log('Confirmer:', confirmer);
   console.log('Deposit Minimum:', ethers.formatEther(depositMinimum), 'HYBOND');
   console.log('Redeem Minimum:', ethers.formatEther(redeemMinimum), 'HYBOND');
   console.log('First Deposit Amount:', ethers.formatEther(firstDepositAmount), 'HYBOND');

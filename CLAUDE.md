@@ -149,7 +149,7 @@ npx hardhat test test/unit/Token.test.ts
 **Current Architecture**: Express is fully queue-driven:
 - All operations use queued request/processing pattern
 - Deposit flow: `requestDeposit()` → enqueue → `processDepositQueue()` → mint tokens
-- Redeem flow (T+2): `requestRedeem()` → `pendingRedeemQueue` → `processPendingRedeems()` → `redeemQueue` → `processRedeemQueue()` → burn tokens and transfer assets
+- Redeem flow (T+2, operator-enforced off-chain): `requestRedeem()` → `pendingRedeemQueue` → `processPendingRedeems()` → `redeemQueue` → `processRedeemQueue()` → burn tokens and transfer assets
 - Fee handling occurs at different phases:
   - Deposit: Fee charged at request time (in underlying asset)
   - Redeem: Fee calculated at T+2 pricing (in redeemAsset)
@@ -183,6 +183,25 @@ function processQueue(uint256 _len) {
 - Fees in basis points (BPS): `feeAmount = amount * feeRate / BPS_BASE`
 - `depositFeeRate`, `redeemFeeRate` configurable by `MAINTAINER_ROLE`
 - Fee recipients: `treasury`, `txFeeTo`, `mgtFeeTo`
+
+### Management Fee Accounting (`offchainShares` / `totalMgtFeeUnclaimed`)
+- **`offchainShares`**: the active BNY share value used as the numerator in `_sharesPerToken`. Set via a two-step propose+confirm flow: OPERATOR_ROLE proposes with `proposeOffchainShares`, CONFIRM_ROLE confirms with `confirmOffchainShares`. Latest proposal wins (re-propose to correct a wrong value before the confirmer echoes it).
+- **`proposedOffchainShares`**: pending value awaiting confirmation. Cleared to zero on confirm. `updateEpoch` reverts `PendingProposalExists` while this is non-zero, ensuring the epoch always bakes in a freshly confirmed value.
+- **`totalMgtFeeUnclaimed`**: currently live (unredeemed) fee tokens. Decremented when fee tokens move pending→final in `_processSinglePendingRedeem`; re-credited in `cancelRedeem` and `revertRedeemToPending` for fee-owned entries.
+- **Formula**: `sharesPerToken = offchainShares / (totalSupply - totalRedeemQueueShares)`. Falls back to `1e18` when the denominator is zero (bootstrap, or fully drained pool). The ratio drops whenever `updateEpoch` mints new HYBOND tokens to `mgtFeeTo` (inflating `totalSupply` while `offchainShares` stays unchanged), and rises on the next `confirmOffchainShares` that reflects BNY growth.
+- `mgtFeeTo` redeems via `requestRedeem`, which **overrides the caller-supplied amount to `totalMgtFeeUnclaimed`** (full live balance) to prevent provenance desync.
+- `updateMgtFeeTo` requires `totalMgtFeeUnclaimed == 0` AND both redeem queues empty.
+- **Pre-sync fairness**: when `offchainShares == 0`, `_sharesPerToken()` returns the 1e18 fallback so deposits and redeems settle at 1:1. This is economically fair (users get the exact asset-value of their shares) and safe because `updateEpoch` is a no-op while `offchainShares == 0` (`dailyFee = 0 * rate = 0`) — no dilution can happen in the pre-sync window.
+
+### mgtFeeTo Operational Invariants (enforced off-chain)
+See the comment block at `Express.sol:80` near the `mgtFeeTo` declaration for the full list. Summary:
+1. mgtFeeTo transfers HYBOND shares only to Express via `requestRedeem`.
+2. Non-fee shares accidentally received by mgtFeeTo go to quarantine, not redeemed.
+3. Don't ban mgtFeeTo while it holds fees or has in-flight fee redeems.
+4. Rotating mgtFeeTo requires drained queues (enforced on-chain).
+5. mgtFeeTo stays unbanned for the pool lifetime (epoch mints would fail on banned recipient).
+6. mgtFeeTo and redeem receivers stay KYC'd through settlement.
+7. Don't change `redeemFeeRate`, `depositFeeRate`, `priceOracle`, `maxStalePeriod`, or `trimDecimals` while any queue is non-empty (changes retroactively affect queued entries).
 
 ### Storage Safety for Upgrades
 - NEVER reorder or remove existing state variables

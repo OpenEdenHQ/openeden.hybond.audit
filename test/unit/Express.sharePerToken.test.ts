@@ -3,23 +3,17 @@ import { ethers } from 'hardhat';
 import { loadFixture, time } from '@nomicfoundation/hardhat-network-helpers';
 import { deployExpressContracts } from '../fixtures/expressDeployments';
 
-// Mirror the contract's _trim: truncate 18-decimal value to given decimals (round down)
-function trim(value: bigint, decimals: number): bigint {
-  if (decimals === 0 || decimals >= 18) return value;
-  const factor = 10n ** BigInt(18 - decimals);
-  return (value / factor) * factor;
-}
-
 const ONE = ethers.parseUnits('1', 18);
-const BPS_BASE = 10000n;
-const DAYS_IN_YEAR = 365n;
-const TRIM_DECIMALS = 3;
 
 describe('Express - SharePerToken & Queue Processing Order', function () {
+  // Extend base fixture with CONFIRM_ROLE for two-step offchainShares flow
   async function deployFixture() {
-    const fixture = await deployExpressContracts();
-    await fixture.express.connect(fixture.maintainer).updateTrimDecimals(TRIM_DECIMALS);
-    return fixture;
+    const base = await deployExpressContracts();
+    const signers = await ethers.getSigners();
+    const confirmer = signers[10];
+    const CONFIRM_ROLE = await base.express.CONFIRM_ROLE();
+    await base.express.connect(base.admin).grantRole(CONFIRM_ROLE, confirmer.address);
+    return { ...base, confirmer };
   }
 
   // Helper: deposit USDC for a user and process the deposit queue
@@ -39,183 +33,349 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
   // Helper: advance past T+2 delay, snapshot ratio, and process pending redeems
   async function processPendingRedeemsAfterDelay(fixture: any, len: number = 0) {
     const { express, operator } = fixture;
-    const delay = await express.convertRedeemRequestsDelay();
-    await time.increase(delay);
+    await time.increase(2n * 24n * 60n * 60n); // T+2 = 2 days (operator-enforced)
     await express.connect(operator).snapshotPendingRedeemRatio();
     await express.connect(operator).processPendingRedeems(len);
   }
 
-  // Helper: setup management fee and accrue one epoch
-  async function setupMgtFeeAndAccrue(fixture: any, feeRateBps: number) {
-    const { express, maintainer, operator } = fixture;
-    await express.connect(maintainer).updateMgtFeeRate(feeRateBps);
-    const timeBuffer = await express.timeBuffer();
-    await time.increase(timeBuffer);
-    await express.connect(operator).updateEpoch();
+  // Helper: set offchainShares via propose + confirm two-step
+  async function setOffchainShares(fixture: any, amount: bigint) {
+    const { express, operator, confirmer } = fixture;
+    await express.connect(operator).proposeOffchainShares(amount);
+    await express.connect(confirmer).confirmOffchainShares(amount);
   }
 
   // =========================================================================
-  // 1. Management fee zero vs non-zero
+  // 1. Bootstrap / full-exit: denom == 0 → returns 1e18
   // =========================================================================
-  describe('Management Fee: zero vs non-zero', function () {
-    it('should keep sharesPerToken at 1e18 when mgtFeeRate is zero', async function () {
+  describe('Bootstrap and full exit (denom == 0)', function () {
+    it('returns 1e18 before any deposits (totalSupply == 0)', async function () {
       const fixture = await loadFixture(deployFixture);
-      const { express, user1 } = fixture;
+      const { express } = fixture;
 
-      await depositFor(fixture, user1, ethers.parseUnits('10000', 18));
-
-      // No management fee set — ratio stays 1:1
+      // No tokens minted yet — denom = totalSupply - totalRedeemQueueShares = 0
       expect(await express.sharesPerToken()).to.equal(ONE);
     });
 
-    it('should revert updateEpoch when mgtFeeRate is zero', async function () {
+    it('returns 1e18 after all tokens have been fully redeemed and burned', async function () {
       const fixture = await loadFixture(deployFixture);
-      const { express, operator, user1 } = fixture;
+      const { express, oem, operator } = fixture;
 
-      await depositFor(fixture, user1, ethers.parseUnits('10000', 18));
+      await depositFor(fixture, fixture.user1, ethers.parseUnits('5000', 18));
+      const userBalance = await oem.balanceOf(fixture.user1.address);
 
-      const timeBuffer = await express.timeBuffer();
-      await time.increase(timeBuffer);
-      await expect(express.connect(operator).updateEpoch()).to.be.revertedWithCustomError(
-        express,
-        'MgtFeeDisabled'
-      );
-      expect(await express.sharesPerToken()).to.equal(ONE);
-    });
+      // offchainShares reflects minted supply 1:1
+      await setOffchainShares(fixture, userBalance);
 
-    it('should decrease sharesPerToken after minting non-zero daily mgtFee', async function () {
-      const fixture = await loadFixture(deployFixture);
-      const { express, user1 } = fixture;
-
-      await depositFor(fixture, user1, ethers.parseUnits('100000', 18));
-      await setupMgtFeeAndAccrue(fixture, 300); // 3% annual
-
-      const ratioAfter = await express.sharesPerToken();
-      expect(await express.totalMgtFeeMinted()).to.be.gte(0n);
-      expect(ratioAfter).to.be.lt(ONE);
-    });
-
-    it('should accrue correct daily fee amount for non-zero mgtFeeRate', async function () {
-      const fixture = await loadFixture(deployFixture);
-      const { express, oem, operator, user1 } = fixture;
-
-      const depositAmount = ethers.parseUnits('100000', 18);
-      await depositFor(fixture, user1, depositAmount);
-
-      await setupMgtFeeAndAccrue(fixture, 300); // 3% annual
-
-      const circulating = await express.circulatingSupply();
-      const expectedFee = trim((circulating * 300n) / (DAYS_IN_YEAR * BPS_BASE), TRIM_DECIMALS);
-      const mgtFeeTo = await express.mgtFeeTo();
-      expect(await oem.balanceOf(mgtFeeTo)).to.equal(expectedFee);
-      expect(await express.totalMgtFeeMinted()).to.be.gte(0n);
-    });
-
-    it('should not affect redeemers USDC amount when mgtFeeRate is zero', async function () {
-      const fixture = await loadFixture(deployFixture);
-      const { express, user1 } = fixture;
-
-      const depositAmount = ethers.parseUnits('5000', 18);
-      await depositFor(fixture, user1, depositAmount);
-
-      const redeemAmount = ethers.parseUnits('1000', 18);
-      await requestRedeemFor(fixture, user1, redeemAmount);
-
-      // ratio should be 1:1, so redeem USDC = share amount (1:1 asset, price 1e18)
-      expect(await express.sharesPerToken()).to.equal(ONE);
-
+      await requestRedeemFor(fixture, fixture.user1, userBalance);
       await processPendingRedeemsAfterDelay(fixture, 1);
+      await express.connect(operator).processRedeemQueue(1);
 
-      // Decode the redeem queue item to verify USDC amount
-      const redeemQueueLen = await express.getRedeemQueueLength();
-      expect(redeemQueueLen).to.equal(1n);
-    });
-
-    it('should reduce redeemers USDC amount when daily mgtFee is minted before processPendingRedeems', async function () {
-      const fixture = await loadFixture(deployFixture);
-      const { express, operator, user1 } = fixture;
-
-      const depositAmount = ethers.parseUnits('100000', 18);
-      await depositFor(fixture, user1, depositAmount);
-
-      // Mint daily management fee
-      await setupMgtFeeAndAccrue(fixture, 300);
-
-      // ratio < 1e18 now
-      const ratio = await express.sharesPerToken();
-      expect(ratio).to.be.lt(ONE);
-
-      // Request redeem — user will get less USDC due to ratio
-      const redeemAmount = ethers.parseUnits('1000', 18);
-      await requestRedeemFor(fixture, user1, redeemAmount);
-
-      const delay = await express.convertRedeemRequestsDelay();
-      await time.increase(delay);
-      await express.connect(operator).snapshotPendingRedeemRatio();
-      await express.connect(operator).processPendingRedeems(1);
-
-      // The locked-in USDC should be less than the redeemAmount
-      // since ratio < 1e18 and USDC = shareAmount * ratio / 1e18
-      const redeemQueueLen = await express.getRedeemQueueLength();
-      expect(redeemQueueLen).to.equal(1n);
+      // totalSupply == 0 → denom == 0 → ratio == 1e18
+      expect(await oem.totalSupply()).to.equal(0n);
+      expect(await express.sharesPerToken()).to.equal(ONE);
     });
   });
 
   // =========================================================================
-  // 2. Cancel pending redeem
+  // 2. offchainShares == 0 (pre-sync): returns the 1e18 fallback
+  // =========================================================================
+  describe('offchainShares == 0 (pre-sync)', function () {
+    it('returns 1e18 fallback when offchainShares is 0, even with denom > 0', async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { express } = fixture;
+
+      // Bootstrap deposit: mints tokens at the 1:1 fallback, totalSupply becomes > 0.
+      await depositFor(fixture, fixture.user1, ethers.parseUnits('10000', 18));
+
+      // Pre-sync invariant: offchainShares still 0. Ratio falls back to 1e18 so that
+      // subsequent deposits/redeems price at 1:1 until the bot syncs.
+      expect(await express.offchainShares()).to.equal(0n);
+      expect(await express.sharesPerToken()).to.equal(ONE);
+    });
+  });
+
+  // =========================================================================
+  // 3. Three ratio regimes: ratio == 1, ratio < 1, ratio > 1
+  // =========================================================================
+  describe('General formula: mulDiv(offchainShares, 1e18, denom)', function () {
+    it('returns 1e18 when offchainShares == denom (ratio = 1)', async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { express, oem } = fixture;
+
+      const depositAmount = ethers.parseUnits('10000', 18);
+      await depositFor(fixture, fixture.user1, depositAmount);
+
+      const totalSupply = await oem.totalSupply();
+      // Set offchainShares == totalSupply (no fees accrued yet)
+      await setOffchainShares(fixture, totalSupply);
+
+      expect(await express.sharesPerToken()).to.equal(ONE);
+    });
+
+    it('returns < 1e18 when offchainShares < denom (fee dilution scenario)', async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { express, oem } = fixture;
+
+      const depositAmount = ethers.parseUnits('10000', 18);
+      await depositFor(fixture, fixture.user1, depositAmount);
+
+      const totalSupply = await oem.totalSupply();
+      // Set offchainShares to 90% of totalSupply (simulating 10% fee dilution)
+      const offchain = (totalSupply * 9n) / 10n;
+      await setOffchainShares(fixture, offchain);
+
+      const ratio = await express.sharesPerToken();
+      expect(ratio).to.be.lt(ONE);
+
+      // Verify exact formula: mulDiv(offchain, 1e18, totalSupply)
+      const expected = (offchain * ONE) / totalSupply;
+      // Allow 1 wei rounding tolerance from mulDiv
+      expect(ratio).to.be.closeTo(expected, 1n);
+    });
+
+    it('returns > 1e18 when offchainShares > denom (BNY grew faster than supply)', async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { express, oem } = fixture;
+
+      const depositAmount = ethers.parseUnits('10000', 18);
+      await depositFor(fixture, fixture.user1, depositAmount);
+
+      const totalSupply = await oem.totalSupply();
+      // Set offchainShares to 110% of totalSupply (BNY fund grew 10% above par)
+      const offchain = (totalSupply * 11n) / 10n;
+      await setOffchainShares(fixture, offchain);
+
+      const ratio = await express.sharesPerToken();
+      expect(ratio).to.be.gt(ONE);
+
+      // Verify exact formula: mulDiv(offchain, 1e18, totalSupply)
+      const expected = (offchain * ONE) / totalSupply;
+      expect(ratio).to.be.closeTo(expected, 1n);
+    });
+  });
+
+  // =========================================================================
+  // 4. Ratio drops after updateEpoch fee mint (offchainShares constant)
+  // =========================================================================
+  describe('Fee accrual via updateEpoch', function () {
+    it('ratio drops after updateEpoch mints new HYBOND tokens (denom grows, offchainShares constant)', async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { express, oem, maintainer, operator } = fixture;
+
+      const depositAmount = ethers.parseUnits('100000', 18);
+      await depositFor(fixture, fixture.user1, depositAmount);
+
+      const totalSupplyBefore = await oem.totalSupply();
+      // Set offchainShares to match current supply (ratio = 1)
+      await setOffchainShares(fixture, totalSupplyBefore);
+      expect(await express.sharesPerToken()).to.equal(ONE);
+
+      // Accrue one epoch of management fee (3% annual)
+      await express.connect(maintainer).updateMgtFeeRate(300);
+      const timeBuffer = await express.timeBuffer();
+      await time.increase(timeBuffer);
+      await express.connect(operator).updateEpoch();
+
+      const totalSupplyAfter = await oem.totalSupply();
+      expect(totalSupplyAfter).to.be.gt(totalSupplyBefore);
+
+      // offchainShares is unchanged; denom (totalSupply - totalRedeemQueueShares) grew
+      // → ratio = offchain / newDenom < oldRatio
+      const ratioAfter = await express.sharesPerToken();
+      expect(ratioAfter).to.be.lt(ONE);
+
+      // Verify formula: mulDiv(offchainShares, 1e18, totalSupplyAfter)
+      const expected = (totalSupplyBefore * ONE) / totalSupplyAfter;
+      expect(ratioAfter).to.be.closeTo(expected, 1n);
+    });
+
+    it('ratio does not change when updateEpoch is called with mgtFeeRate == 0', async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { express, oem } = fixture;
+
+      const depositAmount = ethers.parseUnits('10000', 18);
+      await depositFor(fixture, fixture.user1, depositAmount);
+
+      const totalSupply = await oem.totalSupply();
+      await setOffchainShares(fixture, totalSupply);
+      const ratioBefore = await express.sharesPerToken();
+      expect(ratioBefore).to.equal(ONE);
+
+      // updateEpoch should revert when mgtFeeRate == 0 (no epoch, no ratio change)
+      const timeBuffer = await express.timeBuffer();
+      await time.increase(timeBuffer);
+      await expect(
+        fixture.express.connect(fixture.operator).updateEpoch()
+      ).to.be.revertedWithCustomError(express, 'MgtFeeDisabled');
+
+      expect(await express.sharesPerToken()).to.equal(ratioBefore);
+    });
+  });
+
+  // =========================================================================
+  // 5. Ratio rises after processPendingRedeems (denom shrinks)
+  // =========================================================================
+  describe('processPendingRedeems: denom shrinks → ratio rises', function () {
+    it('ratio rises after processPendingRedeems moves entry pending→final (denom shrinks)', async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { express, oem, maintainer, operator } = fixture;
+
+      await depositFor(fixture, fixture.user1, ethers.parseUnits('100000', 18));
+
+      // Set offchainShares to 90% of totalSupply (diluted scenario)
+      const totalSupplyBefore = await oem.totalSupply();
+      const offchain = (totalSupplyBefore * 9n) / 10n;
+      await setOffchainShares(fixture, offchain);
+      const ratioBefore = await express.sharesPerToken();
+      expect(ratioBefore).to.be.lt(ONE);
+
+      // Request redeem: tokens stay in totalSupply, pending queue tracks them
+      const redeemAmount = ethers.parseUnits('10000', 18);
+      await requestRedeemFor(fixture, fixture.user1, redeemAmount);
+
+      // Ratio unchanged — pending redeems are still included in totalSupply
+      expect(await express.sharesPerToken()).to.equal(ratioBefore);
+
+      // Process pending→final: totalRedeemQueueShares grows by redeemAmount
+      // denom = totalSupply - totalRedeemQueueShares → denom shrinks
+      const delay = 2n * 24n * 60n * 60n; // T+2 = 2 days (operator-enforced)
+      await time.increase(delay);
+      await express.connect(operator).snapshotPendingRedeemRatio();
+      await express.connect(operator).processPendingRedeems(1);
+
+      const ratioAfter = await express.sharesPerToken();
+      // Smaller denom with same offchainShares → higher ratio
+      expect(ratioAfter).to.be.gt(ratioBefore);
+
+      // Verify formula: denom = totalSupply - totalRedeemQueueShares
+      const totalSupply = await oem.totalSupply();
+      const totalRedeemQueueShares = await express.totalRedeemQueueShares();
+      const denom = totalSupply - totalRedeemQueueShares;
+      const expected = (offchain * ONE) / denom;
+      expect(ratioAfter).to.be.closeTo(expected, 1n);
+    });
+  });
+
+  // =========================================================================
+  // 6. Ratio unchanged by processRedeemQueue burn
+  //    (totalSupply and totalRedeemQueueShares drop by the same amount)
+  // =========================================================================
+  describe('processRedeemQueue burn: ratio is invariant', function () {
+    it('ratio is unchanged when processRedeemQueue burns shares (totalSupply and totalRedeemQueueShares drop equally)', async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { express, oem, operator } = fixture;
+
+      await depositFor(fixture, fixture.user1, ethers.parseUnits('100000', 18));
+
+      // Set offchainShares to 90% of totalSupply
+      const totalSupply = await oem.totalSupply();
+      const offchain = (totalSupply * 9n) / 10n;
+      await setOffchainShares(fixture, offchain);
+
+      // Move a redeem through pending→final queue
+      const redeemAmount = ethers.parseUnits('10000', 18);
+      await requestRedeemFor(fixture, fixture.user1, redeemAmount);
+      await processPendingRedeemsAfterDelay(fixture, 1);
+
+      const ratioAfterPending = await express.sharesPerToken();
+
+      // processRedeemQueue burns: totalSupply -= redeemAmount, totalRedeemQueueShares -= redeemAmount
+      // denom = (totalSupply - redeemAmount) - (totalRedeemQueueShares - redeemAmount) = denom unchanged
+      await express.connect(operator).processRedeemQueue(1);
+
+      const ratioAfterBurn = await express.sharesPerToken();
+      expect(ratioAfterBurn).to.equal(ratioAfterPending);
+    });
+
+    it('ratio is unchanged across the full redeem cycle: pending→final→burn', async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { express, oem, operator } = fixture;
+
+      await depositFor(fixture, fixture.user1, ethers.parseUnits('50000', 18));
+      // Set offchainShares before user2 deposits so _calculateMintAmount has a valid ratio
+      const supplyAfterUser1 = await oem.totalSupply();
+      await setOffchainShares(fixture, supplyAfterUser1);
+      await depositFor(fixture, fixture.user2, ethers.parseUnits('50000', 18));
+
+      const totalSupply = await oem.totalSupply();
+      // Set offchain at 95% of supply (mild dilution)
+      const offchain = (totalSupply * 95n) / 100n;
+      await setOffchainShares(fixture, offchain);
+
+      const ratioInitial = await express.sharesPerToken();
+
+      // user1 redeems
+      await requestRedeemFor(fixture, fixture.user1, ethers.parseUnits('5000', 18));
+      await processPendingRedeemsAfterDelay(fixture, 1);
+
+      // Ratio changed when pending moved to final (denom shrank)
+      const ratioAfterFinal = await express.sharesPerToken();
+      expect(ratioAfterFinal).to.not.equal(ratioInitial);
+
+      // Now process the final queue burn
+      await express.connect(operator).processRedeemQueue(1);
+
+      // Ratio should return to equal ratioAfterFinal (burn doesn't change ratio)
+      expect(await express.sharesPerToken()).to.equal(ratioAfterFinal);
+    });
+  });
+
+  // =========================================================================
+  // 7. Cancel pending redeem: ratio unaffected
   // =========================================================================
   describe('Cancel Pending Redeem & SharePerToken', function () {
     it('should not affect sharesPerToken when cancelling pending redeems', async function () {
       const fixture = await loadFixture(deployFixture);
-      const { express, user1, maintainer } = fixture;
+      const { express, oem, maintainer } = fixture;
 
-      await depositFor(fixture, user1, ethers.parseUnits('5000', 18));
+      await depositFor(fixture, fixture.user1, ethers.parseUnits('5000', 18));
 
+      const totalSupply = await oem.totalSupply();
+      await setOffchainShares(fixture, totalSupply);
       const ratioBefore = await express.sharesPerToken();
+      expect(ratioBefore).to.equal(ONE);
 
-      // Request redeem (tokens move to Express, pending queue)
-      await requestRedeemFor(fixture, user1, ethers.parseUnits('1000', 18));
+      // Request redeem (tokens stay in totalSupply while in pending queue)
+      await requestRedeemFor(fixture, fixture.user1, ethers.parseUnits('1000', 18));
 
-      // Pending redeems do NOT affect sharesPerToken (only final redeemQueue does)
-      const ratioDuringPending = await express.sharesPerToken();
-      expect(ratioDuringPending).to.equal(ratioBefore);
+      // Pending redeems do NOT change denom (totalSupply unchanged, totalRedeemQueueShares unchanged)
+      expect(await express.sharesPerToken()).to.equal(ratioBefore);
 
-      // Cancel — tokens return to user
+      // Cancel — tokens return to user, no state change to ratio inputs
       await express.connect(maintainer).cancelPendingRedeem(1);
-
-      const ratioAfterCancel = await express.sharesPerToken();
-      expect(ratioAfterCancel).to.equal(ratioBefore);
+      expect(await express.sharesPerToken()).to.equal(ratioBefore);
     });
 
     it('should restore user token balance after cancelling pending redeem', async function () {
       const fixture = await loadFixture(deployFixture);
-      const { express, oem, user1, maintainer } = fixture;
+      const { express, oem, maintainer } = fixture;
 
-      await depositFor(fixture, user1, ethers.parseUnits('5000', 18));
-      const balanceBefore = await oem.balanceOf(user1.address);
+      await depositFor(fixture, fixture.user1, ethers.parseUnits('5000', 18));
+      await setOffchainShares(fixture, await oem.totalSupply());
+      const balanceBefore = await oem.balanceOf(fixture.user1.address);
 
-      await requestRedeemFor(fixture, user1, ethers.parseUnits('1000', 18));
-      expect(await oem.balanceOf(user1.address)).to.equal(
+      await requestRedeemFor(fixture, fixture.user1, ethers.parseUnits('1000', 18));
+      expect(await oem.balanceOf(fixture.user1.address)).to.equal(
         balanceBefore - ethers.parseUnits('1000', 18)
       );
 
       await express.connect(maintainer).cancelPendingRedeem(1);
-      expect(await oem.balanceOf(user1.address)).to.equal(balanceBefore);
+      expect(await oem.balanceOf(fixture.user1.address)).to.equal(balanceBefore);
     });
 
     it('should allow user to redeem again after cancel', async function () {
       const fixture = await loadFixture(deployFixture);
-      const { express, user1, maintainer, operator } = fixture;
+      const { express, oem, maintainer } = fixture;
 
-      await depositFor(fixture, user1, ethers.parseUnits('5000', 18));
+      await depositFor(fixture, fixture.user1, ethers.parseUnits('5000', 18));
+      await setOffchainShares(fixture, await oem.totalSupply());
 
-      // First redeem, then cancel
-      await requestRedeemFor(fixture, user1, ethers.parseUnits('1000', 18));
+      await requestRedeemFor(fixture, fixture.user1, ethers.parseUnits('1000', 18));
       await express.connect(maintainer).cancelPendingRedeem(1);
       expect(await express.getPendingRedeemQueueLength()).to.equal(0n);
 
-      // Re-request redeem and process normally
-      await requestRedeemFor(fixture, user1, ethers.parseUnits('1000', 18));
+      await requestRedeemFor(fixture, fixture.user1, ethers.parseUnits('1000', 18));
       await processPendingRedeemsAfterDelay(fixture, 1);
 
       expect(await express.getRedeemQueueLength()).to.equal(1n);
@@ -223,396 +383,162 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
 
     it('should cancel multiple pending redeems from different users', async function () {
       const fixture = await loadFixture(deployFixture);
-      const { express, oem, user1, user2, maintainer } = fixture;
+      const { express, oem, maintainer } = fixture;
 
-      await depositFor(fixture, user1, ethers.parseUnits('5000', 18));
-      await depositFor(fixture, user2, ethers.parseUnits('5000', 18));
+      await depositFor(fixture, fixture.user1, ethers.parseUnits('5000', 18));
+      await setOffchainShares(fixture, await oem.totalSupply());
+      await depositFor(fixture, fixture.user2, ethers.parseUnits('5000', 18));
 
-      await requestRedeemFor(fixture, user1, ethers.parseUnits('1000', 18));
-      await requestRedeemFor(fixture, user2, ethers.parseUnits('2000', 18));
+      await requestRedeemFor(fixture, fixture.user1, ethers.parseUnits('1000', 18));
+      await requestRedeemFor(fixture, fixture.user2, ethers.parseUnits('2000', 18));
 
       expect(await express.getPendingRedeemQueueLength()).to.equal(2n);
 
-      const user1BalBefore = await oem.balanceOf(user1.address);
-      const user2BalBefore = await oem.balanceOf(user2.address);
+      const user1BalBefore = await oem.balanceOf(fixture.user1.address);
+      const user2BalBefore = await oem.balanceOf(fixture.user2.address);
 
-      // Cancel all
       await express.connect(maintainer).cancelPendingRedeem(0);
 
       expect(await express.getPendingRedeemQueueLength()).to.equal(0n);
-      expect(await oem.balanceOf(user1.address)).to.equal(
+      expect(await oem.balanceOf(fixture.user1.address)).to.equal(
         user1BalBefore + ethers.parseUnits('1000', 18)
       );
-      expect(await oem.balanceOf(user2.address)).to.equal(
+      expect(await oem.balanceOf(fixture.user2.address)).to.equal(
         user2BalBefore + ethers.parseUnits('2000', 18)
       );
     });
   });
 
   // =========================================================================
-  // 3. Queue processing order: processDeposit before processPendingRedeem (negative case)
+  // 8. Queue processing order
   // =========================================================================
   describe('Queue Processing Order Impact', function () {
-    it('should lock redeem ratio at snapshot time regardless of processDepositQueue ordering', async function () {
+    it('ratio stays constant regardless of processDepositQueue ordering when ratio is snapshotted', async function () {
       const fixture = await loadFixture(deployFixture);
-      const { express, usdo, user1, user2, maintainer, operator } = fixture;
+      const { express, usdo, maintainer, operator, oem } = fixture;
 
-      // Setup: user1 deposits 10k, mint daily mgt fee to make ratio < 1
-      await depositFor(fixture, user1, ethers.parseUnits('10000', 18));
-      await setupMgtFeeAndAccrue(fixture, 300);
+      await depositFor(fixture, fixture.user1, ethers.parseUnits('10000', 18));
+      const totalSupply = await oem.totalSupply();
+      // Set offchainShares to 90% of supply (diluted)
+      await setOffchainShares(fixture, (totalSupply * 9n) / 10n);
 
-      // user1 requests redeem 1000
-      await requestRedeemFor(fixture, user1, ethers.parseUnits('1000', 18));
+      await requestRedeemFor(fixture, fixture.user1, ethers.parseUnits('1000', 18));
 
-      // user2 requests deposit 50000 (large deposit)
+      // user2 requests deposit
       const depositAmount = ethers.parseUnits('50000', 18);
       await express
-        .connect(user2)
-        .requestDeposit(await usdo.getAddress(), depositAmount, user2.address);
+        .connect(fixture.user2)
+        .requestDeposit(await usdo.getAddress(), depositAmount, fixture.user2.address);
 
-      // Snapshot ratio BEFORE any processing — locks the ratio for the redeem
+      // Snapshot ratio before processing — locks ratio for the redeem
       await express.connect(operator).snapshotPendingRedeemRatio();
 
-      // Advance past T+2
-      const delay = await express.convertRedeemRequestsDelay();
+      const delay = 2n * 24n * 60n * 60n; // T+2 = 2 days (operator-enforced)
       await time.increase(delay);
 
-      // Even with "wrong" order (processDeposit first), ratio is already locked
       await express.connect(maintainer).processDepositQueue(1);
       await express.connect(operator).processPendingRedeems(1);
 
-      const redeemQueueLen = await express.getRedeemQueueLength();
-      expect(redeemQueueLen).to.equal(1n);
+      expect(await express.getRedeemQueueLength()).to.equal(1n);
     });
 
-    it('should produce same redeem result regardless of processing order when ratio is snapshotted', async function () {
+    it('ratio drops when processDepositQueue mints new tokens (offchainShares not yet synced)', async function () {
       const fixture = await loadFixture(deployFixture);
-      const { express, usdo, user1, user2, maintainer, operator } = fixture;
+      const { express, usdo, maintainer, operator, oem } = fixture;
 
-      // Same setup
-      await depositFor(fixture, user1, ethers.parseUnits('10000', 18));
-      await setupMgtFeeAndAccrue(fixture, 300);
+      await depositFor(fixture, fixture.user1, ethers.parseUnits('10000', 18));
+      const totalSupply = await oem.totalSupply();
+      await setOffchainShares(fixture, totalSupply);
 
-      await requestRedeemFor(fixture, user1, ethers.parseUnits('1000', 18));
-
-      const depositAmount = ethers.parseUnits('50000', 18);
-      await express
-        .connect(user2)
-        .requestDeposit(await usdo.getAddress(), depositAmount, user2.address);
-
-      // Snapshot ratio before processing
-      await express.connect(operator).snapshotPendingRedeemRatio();
-
-      const delay = await express.convertRedeemRequestsDelay();
-      await time.increase(delay);
-
-      // "Correct" order: processPendingRedeems first, then processDeposit
-      await express.connect(operator).processPendingRedeems(1);
-      await express.connect(maintainer).processDepositQueue(1);
-
-      const redeemQueueLen = await express.getRedeemQueueLength();
-      expect(redeemQueueLen).to.equal(1n);
-    });
-
-    it('should demonstrate that wrong order gives redeemers a higher ratio than correct order', async function () {
-      const fixture = await loadFixture(deployFixture);
-      const { express, usdo, user1, user2, maintainer, operator } = fixture;
-
-      // Setup: user1 deposits, mint daily mgt fee so ratio < 1
-      await depositFor(fixture, user1, ethers.parseUnits('10000', 18));
-      await setupMgtFeeAndAccrue(fixture, 300);
-
-      // user1 requests redeem, user2 queues a large deposit
-      await requestRedeemFor(fixture, user1, ethers.parseUnits('1000', 18));
-      await express
-        .connect(user2)
-        .requestDeposit(await usdo.getAddress(), ethers.parseUnits('50000', 18), user2.address);
-
-      const delay = await express.convertRedeemRequestsDelay();
-      await time.increase(delay);
-
-      // Capture ratio BEFORE any processing — this is what correct order uses for redeemers
-      const ratioBeforeAnyProcessing = await express.sharesPerToken();
-
-      // WRONG ORDER: processDeposit first — ratio changes before redeemers are priced
-      await express.connect(maintainer).processDepositQueue(1);
-      const ratioAfterDeposit = await express.sharesPerToken();
-
-      // The ratio after deposit is HIGHER than before (new circulating dilutes mgtFeeTo dead weight)
-      // This means redeemers would be priced at a more generous ratio in wrong order
-      expect(ratioAfterDeposit).to.be.gt(ratioBeforeAnyProcessing);
-    });
-
-    it('should have no ordering impact when mgtFeeRate is zero (ratio always 1e18)', async function () {
-      const fixture = await loadFixture(deployFixture);
-      const { express, usdo, user1, user2, maintainer, operator } = fixture;
-
-      // No mgt fee — ratio is always 1:1 regardless of ordering
-      await depositFor(fixture, user1, ethers.parseUnits('10000', 18));
-      await requestRedeemFor(fixture, user1, ethers.parseUnits('1000', 18));
+      await requestRedeemFor(fixture, fixture.user1, ethers.parseUnits('1000', 18));
 
       await express
-        .connect(user2)
-        .requestDeposit(await usdo.getAddress(), ethers.parseUnits('5000', 18), user2.address);
+        .connect(fixture.user2)
+        .requestDeposit(
+          await usdo.getAddress(),
+          ethers.parseUnits('5000', 18),
+          fixture.user2.address
+        );
 
-      const delay = await express.convertRedeemRequestsDelay();
+      const delay = 2n * 24n * 60n * 60n; // T+2 = 2 days (operator-enforced)
       await time.increase(delay);
 
       const ratioBefore = await express.sharesPerToken();
       expect(ratioBefore).to.equal(ONE);
 
-      // Snapshot and process — ratio still 1:1
       await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(maintainer).processDepositQueue(1);
+
+      // After deposit: denom grows (new tokens minted), offchainShares unchanged → ratio drops
       const ratioAfterDeposit = await express.sharesPerToken();
-      expect(ratioAfterDeposit).to.equal(ONE);
+      expect(ratioAfterDeposit).to.be.lt(ONE);
 
       await express.connect(operator).processPendingRedeems(1);
-      // No difference — ratio is always 1:1 when fee=0
     });
   });
 
   // =========================================================================
-  // 4. Token burn scenarios (direct burn reduces circulating supply)
-  // =========================================================================
-  describe('Token Burn & CirculatingSupply', function () {
-    it('should decrease circulatingSupply when a holder burns tokens', async function () {
-      const fixture = await loadFixture(deployFixture);
-      const { express, oem, user1, admin } = fixture;
-
-      await depositFor(fixture, user1, ethers.parseUnits('10000', 18));
-
-      const circulatingBefore = await express.circulatingSupply();
-      const totalSupplyBefore = await oem.totalSupply();
-
-      // Grant BURNER_ROLE to admin so we can simulate direct burn
-      const BURNER_ROLE = await oem.BURNER_ROLE();
-      await oem.connect(admin).grantRole(BURNER_ROLE, admin.address);
-
-      // Transfer tokens to admin first, then burn
-      await oem.connect(user1).transfer(admin.address, ethers.parseUnits('2000', 18));
-      await oem.connect(admin).burn(admin.address, ethers.parseUnits('2000', 18));
-
-      const circulatingAfter = await express.circulatingSupply();
-      const totalSupplyAfter = await oem.totalSupply();
-
-      expect(totalSupplyAfter).to.equal(totalSupplyBefore - ethers.parseUnits('2000', 18));
-      expect(circulatingAfter).to.equal(circulatingBefore - ethers.parseUnits('2000', 18));
-    });
-
-    it('should keep sharesPerToken at 1e18 when burn reduces both circulating and total proportionally', async function () {
-      const fixture = await loadFixture(deployFixture);
-      const { express, oem, user1, admin } = fixture;
-
-      await depositFor(fixture, user1, ethers.parseUnits('10000', 18));
-
-      // No mgt fee, no redeem queue — ratio = circulating / total = 1:1
-      expect(await express.sharesPerToken()).to.equal(ONE);
-
-      // Burn some tokens — both numerator and denominator decrease equally
-      const BURNER_ROLE = await oem.BURNER_ROLE();
-      await oem.connect(admin).grantRole(BURNER_ROLE, admin.address);
-      await oem.connect(user1).transfer(admin.address, ethers.parseUnits('3000', 18));
-      await oem.connect(admin).burn(admin.address, ethers.parseUnits('3000', 18));
-
-      // Ratio stays 1:1 since there's no mgtFeeTo balance and no redeem queue
-      expect(await express.sharesPerToken()).to.equal(ONE);
-    });
-
-    it('should change sharesPerToken when burn interacts with existing mgtFee balance', async function () {
-      const fixture = await loadFixture(deployFixture);
-      const { express, oem, user1, operator, admin } = fixture;
-
-      await depositFor(fixture, user1, ethers.parseUnits('100000', 18));
-
-      // Mint daily mgt fee so mgtFeeTo has balance
-      await setupMgtFeeAndAccrue(fixture, 300);
-
-      const ratioBefore = await express.sharesPerToken();
-      expect(ratioBefore).to.be.lt(ONE); // mgtFeeTo has tokens
-
-      // Burn circulating tokens — reduces both circulating and total, but mgtFeeTo balance stays
-      const BURNER_ROLE = await oem.BURNER_ROLE();
-      await oem.connect(admin).grantRole(BURNER_ROLE, admin.address);
-      await oem.connect(user1).transfer(admin.address, ethers.parseUnits('50000', 18));
-      await oem.connect(admin).burn(admin.address, ethers.parseUnits('50000', 18));
-
-      const ratioAfter = await express.sharesPerToken();
-
-      // Ratio should decrease further because mgtFeeTo balance is now a larger proportion of total
-      expect(ratioAfter).to.be.lt(ratioBefore);
-    });
-
-    it('should affect redeem USDC amount when tokens are burned before processPendingRedeems', async function () {
-      const fixture = await loadFixture(deployFixture);
-      const { express, oem, user1, user2, operator, admin } = fixture;
-
-      await depositFor(fixture, user1, ethers.parseUnits('50000', 18));
-      await depositFor(fixture, user2, ethers.parseUnits('50000', 18));
-
-      // Mint daily mgt fee to make ratio < 1
-      await setupMgtFeeAndAccrue(fixture, 300);
-
-      const ratioBeforeBurn = await express.sharesPerToken();
-
-      // user1 requests redeem
-      await requestRedeemFor(fixture, user1, ethers.parseUnits('1000', 18));
-
-      // user2 burns tokens (reduces circulating + total)
-      const BURNER_ROLE = await oem.BURNER_ROLE();
-      await oem.connect(admin).grantRole(BURNER_ROLE, admin.address);
-      await oem.connect(user2).transfer(admin.address, ethers.parseUnits('30000', 18));
-      await oem.connect(admin).burn(admin.address, ethers.parseUnits('30000', 18));
-
-      const ratioAfterBurn = await express.sharesPerToken();
-      expect(ratioAfterBurn).to.be.lt(ratioBeforeBurn);
-
-      // Process pending redeems — user1 gets priced at the LOWER ratio
-      await processPendingRedeemsAfterDelay(fixture, 1);
-
-      const redeemQueueLen = await express.getRedeemQueueLength();
-      expect(redeemQueueLen).to.equal(1n);
-    });
-  });
-
-  // =========================================================================
-  // 5. Additional edge cases
+  // 9. Additional edge cases
   // =========================================================================
   describe('Edge Cases', function () {
     it('should handle full redeem of all circulating tokens', async function () {
       const fixture = await loadFixture(deployFixture);
-      const { express, oem, user1, operator } = fixture;
+      const { express, oem, operator } = fixture;
 
       const depositAmount = ethers.parseUnits('5000', 18);
-      await depositFor(fixture, user1, depositAmount);
+      await depositFor(fixture, fixture.user1, depositAmount);
+      const totalSupply = await oem.totalSupply();
+      await setOffchainShares(fixture, totalSupply);
 
-      const userBalance = await oem.balanceOf(user1.address);
-
-      // Redeem everything
-      await requestRedeemFor(fixture, user1, userBalance);
+      const userBalance = await oem.balanceOf(fixture.user1.address);
+      await requestRedeemFor(fixture, fixture.user1, userBalance);
       await processPendingRedeemsAfterDelay(fixture, 1);
-
-      // All tokens in redeem queue — circulating = 0
-      const circulating = await express.circulatingSupply();
-      expect(circulating).to.equal(0n);
-
-      // Process redeem queue to settle
       await express.connect(operator).processRedeemQueue(1);
 
-      // After full settlement, user has no OEM, total supply reduced
-      expect(await oem.balanceOf(user1.address)).to.equal(0n);
-    });
-
-    it('should handle multiple deposits and redeems with mgtFee in between', async function () {
-      const fixture = await loadFixture(deployFixture);
-      const { express, oem, usdo, user1, user2, maintainer, operator } = fixture;
-
-      // Day 1: user1 deposits
-      await depositFor(fixture, user1, ethers.parseUnits('10000', 18));
-
-      // Mint first daily fee
-      await setupMgtFeeAndAccrue(fixture, 300);
-
-      const ratioAfterFirstFee = await express.sharesPerToken();
-      expect(ratioAfterFirstFee).to.be.lt(ONE);
-
-      // user2 deposits
-      await depositFor(fixture, user2, ethers.parseUnits('20000', 18));
-
-      // user1 redeems
-      await requestRedeemFor(fixture, user1, ethers.parseUnits('5000', 18));
-
-      // Correct order: processPendingRedeems first
-      const delay = await express.convertRedeemRequestsDelay();
-      await time.increase(delay);
-
-      const ratioAtRedeem = await express.sharesPerToken();
-      await express.connect(operator).snapshotPendingRedeemRatio();
-      await express.connect(operator).processPendingRedeems(1);
-
-      // Then accrue another epoch
-      const timeBuffer = await express.timeBuffer();
-      await time.increase(timeBuffer);
-      await express.connect(operator).updateEpoch();
-
-      // Verify second epoch minted more fee
-      const mgtFeeTo = await express.mgtFeeTo();
-      expect(await oem.balanceOf(mgtFeeTo)).to.be.gt(0n);
-      expect(await express.totalMgtFeeMinted()).to.be.gte(0n);
-    });
-
-    it('should handle processPendingRedeems with zero-length (process all)', async function () {
-      const fixture = await loadFixture(deployFixture);
-      const { express, user1, user2, operator } = fixture;
-
-      await depositFor(fixture, user1, ethers.parseUnits('5000', 18));
-      await depositFor(fixture, user2, ethers.parseUnits('5000', 18));
-
-      await requestRedeemFor(fixture, user1, ethers.parseUnits('1000', 18));
-      await requestRedeemFor(fixture, user2, ethers.parseUnits('2000', 18));
-
-      expect(await express.getPendingRedeemQueueLength()).to.equal(2n);
-
-      const delay = await express.convertRedeemRequestsDelay();
-      await time.increase(delay);
-
-      // Snapshot and process all (len=0)
-      await express.connect(operator).snapshotPendingRedeemRatio();
-      await express.connect(operator).processPendingRedeems(0);
-
-      expect(await express.getPendingRedeemQueueLength()).to.equal(0n);
-      expect(await express.getRedeemQueueLength()).to.equal(2n);
+      expect(await oem.balanceOf(fixture.user1.address)).to.equal(0n);
     });
 
     it('should correctly track totalRedeemQueueShares across multiple operations', async function () {
       const fixture = await loadFixture(deployFixture);
-      const { express, user1, user2, operator } = fixture;
+      const { express, oem, operator } = fixture;
 
-      await depositFor(fixture, user1, ethers.parseUnits('10000', 18));
-      await depositFor(fixture, user2, ethers.parseUnits('10000', 18));
+      await depositFor(fixture, fixture.user1, ethers.parseUnits('10000', 18));
+      await setOffchainShares(fixture, await oem.totalSupply());
+      await depositFor(fixture, fixture.user2, ethers.parseUnits('10000', 18));
 
-      // Two redeems
-      await requestRedeemFor(fixture, user1, ethers.parseUnits('2000', 18));
-      await requestRedeemFor(fixture, user2, ethers.parseUnits('3000', 18));
+      await requestRedeemFor(fixture, fixture.user1, ethers.parseUnits('2000', 18));
+      await requestRedeemFor(fixture, fixture.user2, ethers.parseUnits('3000', 18));
 
       await processPendingRedeemsAfterDelay(fixture, 0);
 
-      const totalRedeemShares = await express.totalRedeemQueueShares();
-      expect(totalRedeemShares).to.equal(ethers.parseUnits('5000', 18));
+      expect(await express.totalRedeemQueueShares()).to.equal(ethers.parseUnits('5000', 18));
 
-      // Process one redeem
       await express.connect(operator).processRedeemQueue(1);
 
-      const totalRedeemSharesAfter = await express.totalRedeemQueueShares();
-      expect(totalRedeemSharesAfter).to.equal(ethers.parseUnits('3000', 18));
+      expect(await express.totalRedeemQueueShares()).to.equal(ethers.parseUnits('3000', 18));
     });
 
-    it('should handle updateEpoch after processRedeemQueue reduces totalSupply', async function () {
+    it('should handle processPendingRedeems with zero-length (process all)', async function () {
       const fixture = await loadFixture(deployFixture);
-      const { express, oem, user1, maintainer, operator } = fixture;
+      const { express, oem } = fixture;
 
-      await depositFor(fixture, user1, ethers.parseUnits('100000', 18));
-      await express.connect(maintainer).updateMgtFeeRate(300);
+      await depositFor(fixture, fixture.user1, ethers.parseUnits('5000', 18));
+      await setOffchainShares(fixture, await oem.totalSupply());
+      await depositFor(fixture, fixture.user2, ethers.parseUnits('5000', 18));
 
-      // Redeem some tokens
-      await requestRedeemFor(fixture, user1, ethers.parseUnits('20000', 18));
-      await processPendingRedeemsAfterDelay(fixture, 1);
-      await express.connect(operator).processRedeemQueue(1);
+      await requestRedeemFor(fixture, fixture.user1, ethers.parseUnits('1000', 18));
+      await requestRedeemFor(fixture, fixture.user2, ethers.parseUnits('2000', 18));
 
-      // Now updateEpoch — fee should be based on smaller circulating supply
-      const timeBuffer = await express.timeBuffer();
-      await time.increase(timeBuffer);
+      expect(await express.getPendingRedeemQueueLength()).to.equal(2n);
 
-      const circulatingBeforeEpoch = await express.circulatingSupply();
-      await express.connect(operator).updateEpoch();
+      const delay = 2n * 24n * 60n * 60n; // T+2 = 2 days (operator-enforced)
+      await time.increase(delay);
 
-      const expectedFee = trim(
-        (circulatingBeforeEpoch * 300n) / (DAYS_IN_YEAR * BPS_BASE),
-        TRIM_DECIMALS
-      );
-      const mgtFeeTo = await express.mgtFeeTo();
-      expect(await oem.balanceOf(mgtFeeTo)).to.equal(expectedFee);
-      expect(await express.totalMgtFeeMinted()).to.be.gte(0n);
+      await fixture.express.connect(fixture.operator).snapshotPendingRedeemRatio();
+      await fixture.express.connect(fixture.operator).processPendingRedeems(0);
+
+      expect(await express.getPendingRedeemQueueLength()).to.equal(0n);
+      expect(await express.getRedeemQueueLength()).to.equal(2n);
     });
 
     it('should revert processPendingRedeems when queue is empty', async function () {
@@ -625,53 +551,45 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
 
     it('should handle the full SOP order: processPendingRedeems -> processDeposit -> updateEpoch -> processRedeemQueue', async function () {
       const fixture = await loadFixture(deployFixture);
-      const { express, oem, usdo, user1, user2, maintainer, operator } = fixture;
+      const { express, usdo, maintainer, operator, oem } = fixture;
 
-      // Setup: deposit, set mgt fee, mint daily fee
-      await depositFor(fixture, user1, ethers.parseUnits('50000', 18));
-      await setupMgtFeeAndAccrue(fixture, 300);
+      await depositFor(fixture, fixture.user1, ethers.parseUnits('50000', 18));
+      const totalSupplyBefore = await oem.totalSupply();
+      // Set offchainShares slightly below supply (mild fee dilution)
+      await setOffchainShares(fixture, (totalSupplyBefore * 99n) / 100n);
 
-      // T+0: user1 requests redeem, user2 requests deposit
-      await requestRedeemFor(fixture, user1, ethers.parseUnits('5000', 18));
+      await express.connect(maintainer).updateMgtFeeRate(300);
+
+      await requestRedeemFor(fixture, fixture.user1, ethers.parseUnits('5000', 18));
       await express
-        .connect(user2)
-        .requestDeposit(await usdo.getAddress(), ethers.parseUnits('30000', 18), user2.address);
+        .connect(fixture.user2)
+        .requestDeposit(
+          await usdo.getAddress(),
+          ethers.parseUnits('30000', 18),
+          fixture.user2.address
+        );
 
-      // T+2: Execute in SOP order
-      const delay = await express.convertRedeemRequestsDelay();
+      const delay = 2n * 24n * 60n * 60n; // T+2 = 2 days (operator-enforced)
       await time.increase(delay);
 
-      // Step 1: snapshot ratio, then processPendingRedeems
+      // Step 1: snapshot, then processPendingRedeems
       await express.connect(operator).snapshotPendingRedeemRatio();
       await express.connect(operator).processPendingRedeems(1);
 
-      // After processPendingRedeems, effectiveTotal shrinks — mgtFee weight increases, ratio drops
-      const ratioAfterPendingRedeem = await express.sharesPerToken();
-
-      // Step 2: processDepositQueue (mint new tokens)
+      // Step 2: processDepositQueue
       await express.connect(maintainer).processDepositQueue(1);
-      const ratioAfterDeposit = await express.sharesPerToken();
 
-      // Ratio goes back up after deposit (effectiveTotal grows, mgtFee fraction shrinks)
-      expect(ratioAfterDeposit).to.be.gt(ratioAfterPendingRedeem);
-
-      // Step 3: updateEpoch (accrue fee on correct circulating including new deposits)
+      // Step 3: updateEpoch (mints fee, grows totalSupply, drops ratio)
       const timeBuffer = await express.timeBuffer();
       await time.increase(timeBuffer);
       await express.connect(operator).updateEpoch();
 
-      const circulatingForFee = await express.circulatingSupply();
-      expect(circulatingForFee).to.be.gt(0n);
-
-      // Step 4: processRedeemQueue (burn tokens, transfer USDC)
-      const user1UsdcBefore = await fixture.usdo.balanceOf(user1.address);
+      // Step 4: processRedeemQueue
+      const user1UsdcBefore = await fixture.usdo.balanceOf(fixture.user1.address);
       await express.connect(operator).processRedeemQueue(1);
-      const user1UsdcAfter = await fixture.usdo.balanceOf(user1.address);
+      const user1UsdcAfter = await fixture.usdo.balanceOf(fixture.user1.address);
 
-      // User received USDC
       expect(user1UsdcAfter).to.be.gt(user1UsdcBefore);
-
-      // Redeem queue is now empty
       expect(await express.getRedeemQueueLength()).to.equal(0n);
     });
   });

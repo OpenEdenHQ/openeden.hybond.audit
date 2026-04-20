@@ -28,6 +28,7 @@
     "treasury": "0x7eFA2138991760E8F5313A768A5f06218c80ad9F",
     "txFeeTo": "0x7eFA2138991760E8F5313A768A5f06218c80ad9F",
     "mgtFeeTo": "0x7eFA2138991760E8F5313A768A5f06218c80ad9F",
+    "confirmer": "0x0000000000000000000000000000000000000000",
     "depositMinimum": "10",
     "redeemMinimum": "5",
     "firstDepositAmount": "20",
