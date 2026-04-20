@@ -78,24 +78,24 @@ Each step has its own trigger — the ordering below is the required sequence **
 | 4.1  | `proposePrice`                 | OPERATOR_ROLE     | **Business days only** (BNY publishes price)                                   | Oracle price must be fresh before any mint/redeem arithmetic                 |
 | 4.2  | `confirmPrice`                 | CONFIRM_ROLE      | **Business days only** (pairs with 4.1)                                        | Echo-confirm the proposed price                                              |
 | 4.3  | `processDepositQueue`          | MAINTAINER_ROLE   | **Only if T+2 deposit requests are ready** (deposits made 2 business days ago) | Mint priced against previous-day's `offchainShares` and fresh oracle price   |
-| 4.4  | `proposeOffchainShares`        | OPERATOR_ROLE     | **Only when BNY balance changed** (claimed mgt fee, buys, sells), **T+2**      | Sync new AUM before any fee accrual or new snapshot                          |
-| 4.5  | `confirmOffchainShares`        | CONFIRM_ROLE      | **Only when 4.4 was run** (pairs with it)                                      | Echo-confirm; clears `proposedOffchainShares`                                |
-| 4.6  | `updateEpoch`                  | OPERATOR_ROLE     | **Daily**                                                                      | Accrue daily fee on `offchainShares`. Reverts if a proposal from 4.4 is unconfirmed |
-| 4.7  | `processPendingRedeems`        | OPERATOR_ROLE     | **Only if T+2 redeem requests are ready**                                      | Move delay-ripe entries into the final queue at their snapshot ratio         |
+| 4.4  | `processPendingRedeems`        | OPERATOR_ROLE     | **Only if T+2 redeem requests are ready**                                      | Move delay-ripe entries into the final queue at their ~2-day-old snapshot ratio. Requires oracle price; independent of today's `offchainShares` sync and fee mint |
+| 4.5  | `proposeOffchainShares`        | OPERATOR_ROLE     | **Only when BNY balance changed** (claimed mgt fee, buys, sells), **T+2**      | Sync new AUM before any fee accrual or new snapshot                          |
+| 4.6  | `confirmOffchainShares`        | CONFIRM_ROLE      | **Only when 4.5 was run** (pairs with it)                                      | Echo-confirm; clears `proposedOffchainShares`                                |
+| 4.7  | `updateEpoch`                  | OPERATOR_ROLE     | **Daily**                                                                      | Accrue daily fee on `offchainShares`. Reverts if a proposal from 4.5 is unconfirmed |
 | 4.8  | `processRedeemQueue`           | OPERATOR_ROLE     | **Only if T+4 USDC has arrived** for that batch                                | Burn Hybond and pay USDC (FIFO, liquidity-gated)                             |
 | 4.9  | `snapshotPendingRedeemRatio`   | OPERATOR_ROLE     | **Only if there were fresh redeem requests today** (new pending entries)       | Freeze end-of-day ratio for today's fresh pending entries (consumed ~2 days later) |
 
 **Rationale:**
 
 - Steps 4.1–4.2 (oracle price) must precede any step that reads `getPrice()` — `processDepositQueue` (mint pricing) and `processPendingRedeems` (redeem pricing).
-- Step 4.3 before 4.4/4.5 so deposits mint at the previous day's `offchainShares`; *then* the bot syncs the new BNY balance that includes today's deposits' purchases.
-- Step 4.6 (`updateEpoch`) reverts `PendingProposalExists` unless the `offchainShares` proposal from 4.4 has been confirmed — this hard-gates fee accrual on a fresh AUM value.
-- Step 4.7 after 4.6 so today's pending entries snapshot at the post-fee ratio.
-- Step 4.9 last because steps 4.7 and 4.8 both mutate `totalRedeemQueueShares`; snapshotting after step 4.8 captures the settled end-of-day state.
+- Step 4.3 before 4.5/4.6 so deposits mint at the previous day's `offchainShares`; *then* the bot syncs the new BNY balance that includes today's deposits' purchases.
+- Step 4.4 (`processPendingRedeems`) prices each entry with the ratio snapshotted ~2 days earlier (`snapshotRatios[pendingId]`), so its placement is independent of today's `offchainShares` sync (4.5/4.6) and today's fee mint (4.7). Its only hard upstream dependency is oracle price (4.1/4.2); its only hard downstream dependency is `snapshotPendingRedeemRatio` (4.9), which must re-read the live ratio after all state mutations.
+- Step 4.7 (`updateEpoch`) reverts `PendingProposalExists` unless the `offchainShares` proposal from 4.5 has been confirmed — this hard-gates fee accrual on a fresh AUM value.
+- Step 4.9 last because steps 4.4 and 4.8 both mutate `totalRedeemQueueShares`, and step 4.7 mints fee tokens that change `totalSupply` — snapshotting after 4.8 captures the settled end-of-day ratio.
 
 After step 4.8, if USDC was paid out to redeemers, the fund operator runs a second `proposeOffchainShares` + `confirmOffchainShares` round to reflect the BNY reduction. This is operational only — no dedicated on-chain step.
 
-**Non-business days:** only step 4.6 (`updateEpoch`) runs, accruing the daily fee against the last known `offchainShares`. All other steps are conditional on market activity (price publication, T+2/T+4 settlement, fresh requests).
+**Non-business days:** only step 4.7 (`updateEpoch`) runs, accruing the daily fee against the last known `offchainShares`. All other steps are conditional on market activity (price publication, T+2/T+4 settlement, fresh requests).
 
 ### 5. Settlement (T+4)
 

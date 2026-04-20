@@ -185,7 +185,7 @@ describe('Daily Routine — end-to-end integration', function () {
       // User A's pending entry is fresh — convertRedeemRequestsDelay hasn't elapsed, so
       // _processSinglePendingRedeem returns false and the outer loop reverts NoPendingRedeemsReady.
       await expect(
-        express.connect(operator).processPendingRedeems(0)
+        express.connect(operator).processPendingRedeems(1)
       ).to.be.revertedWithCustomError(express, 'NoPendingRedeemsReady');
     });
 
@@ -202,7 +202,8 @@ describe('Daily Routine — end-to-end integration', function () {
       const { express, operator } = ctx;
 
       const ratioNow = await express.sharesPerToken();
-      await express.connect(operator).snapshotPendingRedeemRatio();
+      const len = await express.getPendingRedeemQueueLength();
+      await express.connect(operator).snapshotPendingRedeemRatio(0, len);
 
       // Pending queue has 1 entry: user A's redeem
       expect(await express.getPendingRedeemQueueLength()).to.equal(1n);
@@ -251,10 +252,11 @@ describe('Daily Routine — end-to-end integration', function () {
       expect(await express.totalMgtFeeUnclaimed()).to.be.gt(mgtFeeDay1);
     });
 
-    it('step 4: processPendingRedeems(0) processes user A (T+2 elapsed)', async function () {
+    it('step 4: processPendingRedeems processes user A (T+2 elapsed)', async function () {
       const { express, operator } = ctx;
 
-      await expect(express.connect(operator).processPendingRedeems(0)).to.emit(
+      const len = await express.getPendingRedeemQueueLength();
+      await expect(express.connect(operator).processPendingRedeems(len)).to.emit(
         express,
         'ProcessPendingRedeem'
       );
@@ -290,7 +292,7 @@ describe('Daily Routine — end-to-end integration', function () {
       const { express, operator } = ctx;
 
       await expect(
-        express.connect(operator).snapshotPendingRedeemRatio()
+        express.connect(operator).snapshotPendingRedeemRatio(0, 1)
       ).to.be.revertedWithCustomError(express, 'EmptyQueue');
     });
 

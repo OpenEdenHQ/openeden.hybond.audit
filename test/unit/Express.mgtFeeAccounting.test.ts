@@ -75,7 +75,7 @@ describe('Express - Management Fee Accounting (spreadsheet simulation)', functio
     await time.increase(2n * 24n * 60n * 60n);
 
     // Snapshot the pending-redeem ratio.
-    await express.connect(operator).snapshotPendingRedeemRatio();
+    await express.connect(operator).snapshotPendingRedeemRatio(0, 1n);
 
     // Capture the ratio right before processPendingRedeems.
     const ratioBeforePending = await express.sharesPerToken();

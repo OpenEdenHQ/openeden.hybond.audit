@@ -31,11 +31,12 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
   }
 
   // Helper: advance past T+2 delay, snapshot ratio, and process pending redeems
-  async function processPendingRedeemsAfterDelay(fixture: any, len: number = 0) {
+  async function processPendingRedeemsAfterDelay(fixture: any, len?: bigint) {
     const { express, operator } = fixture;
     await time.increase(2n * 24n * 60n * 60n); // T+2 = 2 days (operator-enforced)
-    await express.connect(operator).snapshotPendingRedeemRatio();
-    await express.connect(operator).processPendingRedeems(len);
+    const queueLen: bigint = await express.getPendingRedeemQueueLength();
+    await express.connect(operator).snapshotPendingRedeemRatio(0, queueLen);
+    await express.connect(operator).processPendingRedeems(len ?? queueLen);
   }
 
   // Helper: set offchainShares via propose + confirm two-step
@@ -241,7 +242,7 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
       // denom = totalSupply - totalRedeemQueueShares → denom shrinks
       const delay = 2n * 24n * 60n * 60n; // T+2 = 2 days (operator-enforced)
       await time.increase(delay);
-      await express.connect(operator).snapshotPendingRedeemRatio();
+      await express.connect(operator).snapshotPendingRedeemRatio(0, 1n);
       await express.connect(operator).processPendingRedeems(1);
 
       const ratioAfter = await express.sharesPerToken();
@@ -431,7 +432,7 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
         .requestDeposit(await usdo.getAddress(), depositAmount, fixture.user2.address);
 
       // Snapshot ratio before processing — locks ratio for the redeem
-      await express.connect(operator).snapshotPendingRedeemRatio();
+      await express.connect(operator).snapshotPendingRedeemRatio(0, 1n);
 
       const delay = 2n * 24n * 60n * 60n; // T+2 = 2 days (operator-enforced)
       await time.increase(delay);
@@ -466,7 +467,7 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
       const ratioBefore = await express.sharesPerToken();
       expect(ratioBefore).to.equal(ONE);
 
-      await express.connect(operator).snapshotPendingRedeemRatio();
+      await express.connect(operator).snapshotPendingRedeemRatio(0, 1n);
       await express.connect(maintainer).processDepositQueue(1);
 
       // After deposit: denom grows (new tokens minted), offchainShares unchanged → ratio drops
@@ -509,7 +510,7 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
       await requestRedeemFor(fixture, fixture.user1, ethers.parseUnits('2000', 18));
       await requestRedeemFor(fixture, fixture.user2, ethers.parseUnits('3000', 18));
 
-      await processPendingRedeemsAfterDelay(fixture, 0);
+      await processPendingRedeemsAfterDelay(fixture);
 
       expect(await express.totalRedeemQueueShares()).to.equal(ethers.parseUnits('5000', 18));
 
@@ -534,8 +535,9 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
       const delay = 2n * 24n * 60n * 60n; // T+2 = 2 days (operator-enforced)
       await time.increase(delay);
 
-      await fixture.express.connect(fixture.operator).snapshotPendingRedeemRatio();
-      await fixture.express.connect(fixture.operator).processPendingRedeems(0);
+      const queueLen: bigint = await fixture.express.getPendingRedeemQueueLength();
+      await fixture.express.connect(fixture.operator).snapshotPendingRedeemRatio(0, queueLen);
+      await fixture.express.connect(fixture.operator).processPendingRedeems(queueLen);
 
       expect(await express.getPendingRedeemQueueLength()).to.equal(0n);
       expect(await express.getRedeemQueueLength()).to.equal(2n);
@@ -544,9 +546,12 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
     it('should revert processPendingRedeems when queue is empty', async function () {
       const { express, operator } = await loadFixture(deployFixture);
 
+      // _len = 0 is not supported (no "process all" sentinel); operator must pass a positive
+      // _len. With an empty queue, the loop body never runs and processed stays 0, so the
+      // function reverts with NoPendingRedeemsReady.
       await expect(
-        express.connect(operator).processPendingRedeems(0)
-      ).to.be.revertedWithCustomError(express, 'EmptyQueue');
+        express.connect(operator).processPendingRedeems(1)
+      ).to.be.revertedWithCustomError(express, 'NoPendingRedeemsReady');
     });
 
     it('should handle the full SOP order: processPendingRedeems -> processDeposit -> updateEpoch -> processRedeemQueue', async function () {
@@ -573,7 +578,7 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
       await time.increase(delay);
 
       // Step 1: snapshot, then processPendingRedeems
-      await express.connect(operator).snapshotPendingRedeemRatio();
+      await express.connect(operator).snapshotPendingRedeemRatio(0, 1n);
       await express.connect(operator).processPendingRedeems(1);
 
       // Step 2: processDepositQueue
