@@ -48,7 +48,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     bytes32 public constant MAINTAINER_ROLE = keccak256("MAINTAINER_ROLE");
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
     bytes32 public constant UPGRADE_ROLE = keccak256("UPGRADE_ROLE");
-    bytes32 public constant CONFIRM_ROLE = keccak256("CONFIRM_ROLE");
+    // CONFIRM_ROLE removed — slot kept empty to preserve storage layout of AccessControl role hashes
 
     /*//////////////////////////////////////////////////////////////
                                CONSTANTS
@@ -120,15 +120,15 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     uint256 public maxStalePeriod;
 
     // Active offchain BNY share value in 18-decimal convention.
-    // Set by proposeOffchainShares + confirmOffchainShares (two-step, two-role).
-    // reuse the `epoch` state variable
+    // Updated automatically by processDepositQueue (increment) and requestRedeem (decrement).
+    // Admin override available via updateOffchainShares for rare reconciliation.
     uint256 public offchainShares;
 
     // Last update timestamp for epoch management
     uint256 public lastUpdateTS;
 
-    // Pending proposed value awaiting confirmation. Zero means no pending proposal.
-    uint256 public proposedOffchainShares;
+    // Slot reserved (was proposedOffchainShares — removed in sharesPerToken invariance refactor)
+    uint256 private __reserved_proposedOffchainShares;
 
     // Minimum time between epoch updates (e.g., 20 hours)
     uint256 public timeBuffer;
@@ -153,8 +153,9 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     // Delay in seconds before pending requests can be processed (default: 2 days)
     uint256 public convertRedeemRequestsDelay;
 
-    // Aggregate share amount in redeemQueue (for circulatingSupply calculation)
-    uint256 public totalRedeemQueueShares;
+    // Aggregate token amount committed to redeem queues (pending + final). Incremented at
+    // requestRedeem time, decremented at processRedeemQueue (burn) or cancel time.
+    uint256 public totalRedeemQueueTokens;
 
     // Precision trimming: number of decimals to keep (e.g., 3 means trim to 3 decimals)
     uint8 public trimDecimals;
@@ -169,13 +170,12 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     // user => asset => amount
     mapping(address => mapping(address => uint256)) public depositEscrowBalance;
 
-    // Snapshotted sharesPerToken ratio for pending redeem entries, keyed by pending redeem ID.
-    // Set by snapshotPendingRedeemRatio() or setSnapshotRatio(). Used by processPendingRedeems().
-    mapping(bytes32 => uint256) public snapshotRatios;
+    // Slot reserved (was snapshotRatios — removed in sharesPerToken invariance refactor)
+    mapping(bytes32 => uint256) private __reserved_snapshotRatios;
 
-    // Currently live (unredeemed) management fee tokens. Decremented when fee tokens move from the
-    // pending redeem queue to the final redeem queue (inside _processSinglePendingRedeem).
-    // Re-credited in cancelRedeem and revertRedeemToPending for fee-owned entries.
+    // Currently live (unredeemed) management fee tokens. Zeroed at requestRedeem time when
+    // mgtFeeTo redeems (fixes M-1 double-redeem). Re-credited in cancelPendingRedeem and
+    // cancelRedeem for fee-owned entries.
     uint256 public totalMgtFeeUnclaimed;
 
     /*//////////////////////////////////////////////////////////////
@@ -219,7 +219,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     );
 
     // Event for adding a redeem request to the queue
-    event AddToPendingRedeemQueue(address indexed from, address indexed to, uint256 shareAmount, bytes32 indexed id);
+    event AddToPendingRedeemQueue(address indexed from, address indexed to, uint256 tokenAmount, uint256 offchainShareAmount, bytes32 indexed id);
 
     // Event for processing a redeem request, after price is known
     event ProcessPendingRedeem(
@@ -287,14 +287,8 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     event DepositEscrowIn(address indexed account, address indexed asset, uint256 amount);
     // Event for claiming escrowed deposit assets
     event DepositEscrowOut(address indexed account, address indexed asset, uint256 amount);
-    // Event for proposing a new offchain BNY share value
-    event ProposeOffchainShares(address indexed proposer, uint256 supply);
-    // Event for confirming a proposed offchain share value
-    event ConfirmOffchainShares(address indexed confirmer, uint256 newSupply, uint256 previousSupply);
-    // Event for snapshotting sharesPerToken ratio for pending redeem entries
-    event SnapshotPendingRedeemRatio(bytes32 indexed id, uint256 ratio);
-    // Event for manually setting a snapshot ratio for a pending redeem entry
-    event SetSnapshotRatio(bytes32 indexed id, uint256 ratio);
+    // Event for admin override of offchainShares (rare: share splits, reconciliation)
+    event UpdateOffchainShares(address indexed caller, uint256 newValue, uint256 previousValue);
 
     /*//////////////////////////////////////////////////////////////
                                  ERRORS
@@ -313,8 +307,8 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     error NoPendingRedeemsReady();
     error MgtFeeDisabled();
     error QueuesNotEmpty();
-    error RatioNotSnapshotted(bytes32 id);
-    error PendingProposalExists(uint256 pendingValue);
+    error InsufficientOffchainShares();
+    error InsufficientSettlementFunds(uint256 oracleTotal, uint256 suppliedTotal);
 
     /*//////////////////////////////////////////////////////////////
                               CONSTRUCTOR
@@ -660,12 +654,52 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     //////////////////////////////////////////////////////////////*/
 
     /**
-     * @notice Process queued deposit requests
+     * @notice Process queued deposit requests with pro-rata minting
+     * @dev Two-pass algorithm: first pass peeks entries to sum normalized net assets and validate KYC,
+     *      then computes total mint from operator-supplied _newShares. Second pass pops and mints pro-rata.
+     *      This preserves the sharesPerToken ratio exactly (see design spec for invariance proof).
      * @param _len Number of requests to process (0 = process all)
+     * @param _newShares Actual offchain fund shares acquired for this batch (must be >0 when _len >0)
      */
-    function processDepositQueue(uint256 _len) external onlyRole(MAINTAINER_ROLE) {
+    function processDepositQueue(uint256 _len, uint256 _newShares) external onlyRole(MAINTAINER_ROLE) {
         _len = _validateQueueProcessing(depositQueue.length(), _len);
 
+        // If no entries to process, _newShares must be 0
+        if (_len == 0) {
+            if (_newShares != 0) revert InvalidAmount();
+            return;
+        }
+        if (_newShares == 0) revert InvalidAmount();
+
+        // Capture current ratio before state changes
+        uint256 currentRatio = _sharesPerToken();
+
+        // First pass: peek entries, validate KYC, sum normalized net assets
+        uint256 batchTotalNetAssets;
+        for (uint256 i = 0; i < _len; ) {
+            bytes memory data = depositQueue.at(i);
+            (
+                address asset,
+                address sender,
+                address receiver,
+                uint256 netAssets,
+                ,
+                // feeAmt — not needed in first pass
+            ) = _decodeDepositData(data);
+
+            _validateKyc(sender, receiver);
+            batchTotalNetAssets += convertFromUnderlying(asset, netAssets);
+
+            unchecked { ++i; }
+        }
+
+        // Compute total tokens to mint (preserves ratio exactly)
+        uint256 mintTotal = Math.mulDiv(_newShares, 1e18, currentRatio);
+
+        // Update offchainShares
+        offchainShares += _newShares;
+
+        // Second pass: pop entries, compute pro-rata mint, mint tokens
         for (uint256 count = 0; count < _len; ) {
             bytes memory data = depositQueue.front();
             (
@@ -677,18 +711,16 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
                 bytes32 prevId
             ) = _decodeDepositData(data);
 
-            _validateKyc(sender, receiver);
-
             depositQueue.popFront();
             depositInfo[receiver][asset] -= netAssets;
-            unchecked {
-                ++count;
-            }
 
-            uint256 mintedAmount = _calculateMintAmount(asset, netAssets);
+            uint256 normalizedAssets = convertFromUnderlying(asset, netAssets);
+            uint256 mintedAmount = _trim(Math.mulDiv(mintTotal, normalizedAssets, batchTotalNetAssets));
             token.mint(receiver, mintedAmount);
 
             emit ProcessDeposit(asset, sender, receiver, netAssets, mintedAmount, feeAmt, prevId);
+
+            unchecked { ++count; }
         }
     }
 
@@ -765,50 +797,51 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
 
     /**
      * @notice Queue a redeem request for T+2 pricing
-     * @dev Request goes to pending queue without price calculation
-     *      Fees held in contract until processing (refundable on cancellation)
+     * @dev Request goes to pending queue. offchainShares is decremented immediately to maintain
+     *      sharesPerToken invariance. The offchainShareAmount is encoded in the queue entry for
+     *      later use in processPendingRedeems (no snapshot needed).
      *
-     *      For the mgtFeeTo wallet, the caller-supplied _shareAmount is IGNORED and
+     *      For the mgtFeeTo wallet, the caller-supplied _tokenAmount is IGNORED and
      *      the full live fee balance (totalMgtFeeUnclaimed) is redeemed instead.
-     *      This prevents fee-share provenance desync when the mgtFeeTo wallet holds
-     *      any non-fee shares (e.g. from direct transfers). The redeemMinimum check is
-     *      skipped for mgtFeeTo so that small daily fee balances can still be claimed.
+     *      totalMgtFeeUnclaimed is zeroed at request time (fixes M-1 double-redeem).
      * @param _to The address to receive redeemed asset
-     * @param _shareAmount The amount of share to redeem (IGNORED if caller is mgtFeeTo)
+     * @param _tokenAmount The amount of tokens to redeem (IGNORED if caller is mgtFeeTo)
      */
-    function requestRedeem(address _to, uint256 _shareAmount) external whenNotPausedRedeem {
+    function requestRedeem(address _to, uint256 _tokenAmount) external whenNotPausedRedeem {
         address from = _msgSender();
         _validateKyc(from, _to);
 
         if (from == mgtFeeTo) {
             if (totalMgtFeeUnclaimed == 0) revert InvalidAmount();
-            _shareAmount = totalMgtFeeUnclaimed;
+            _tokenAmount = totalMgtFeeUnclaimed;
+            totalMgtFeeUnclaimed = 0; // decrement at request time (fixes M-1)
         } else {
-            if (_shareAmount < redeemMinimum) {
-                revert RedeemLessThanMinimum(_shareAmount, redeemMinimum);
+            if (_tokenAmount < redeemMinimum) {
+                revert RedeemLessThanMinimum(_tokenAmount, redeemMinimum);
             }
         }
 
-        // Collect full token amount to contract
-        // No fee deduction - fee will be charged from redeemAsset output
-        IERC20(address(token)).safeTransferFrom(from, address(this), _shareAmount);
+        // Convert token amount to offchain shares at current ratio
+        uint256 offchainShareAmount = Math.mulDiv(_tokenAmount, _sharesPerToken(), 1e18);
 
-        // Track full token amount
-        pendingRedeemInfo[_to] += _shareAmount;
+        // Guard: offchainShares must cover the deduction
+        if (offchainShares < offchainShareAmount) revert InsufficientOffchainShares();
 
-        bytes32 id = keccak256(abi.encode(from, _to, _shareAmount, block.timestamp, _nonce++));
+        // Update accounting — both numerator and denominator change proportionally
+        offchainShares -= offchainShareAmount;
+        totalRedeemQueueTokens += _tokenAmount;
 
-        bytes memory data = abi.encode(
-            from,
-            _to,
-            _shareAmount, // Full share amount
-            block.timestamp, // Store request time for T+2 check
-            id
-        );
+        // Collect full token amount to contract (burned later in processRedeemQueue)
+        IERC20(address(token)).safeTransferFrom(from, address(this), _tokenAmount);
 
+        // Track pending info
+        pendingRedeemInfo[_to] += _tokenAmount;
+
+        bytes32 id = keccak256(abi.encode(from, _to, _tokenAmount, offchainShareAmount, block.timestamp, _nonce++));
+        bytes memory data = abi.encode(from, _to, _tokenAmount, offchainShareAmount, block.timestamp, id);
         pendingRedeemQueue.pushBack(data);
 
-        emit AddToPendingRedeemQueue(from, _to, _shareAmount, id);
+        emit AddToPendingRedeemQueue(from, _to, _tokenAmount, offchainShareAmount, id);
     }
 
     // /**
@@ -830,7 +863,8 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     ) public view returns (uint256 feeAmt, uint256 redeemAssetAmt, uint256 netRedeemAssetAmt) {
         uint256 price = getPrice();
         uint256 ratio = _sharesPerToken();
-        redeemAssetAmt = _redeemAssetAmount(_shareAmount, ratio, price);
+        uint256 offchainShareAmount = Math.mulDiv(_shareAmount, ratio, 1e18);
+        redeemAssetAmt = _redeemAssetAmount(offchainShareAmount, price);
         feeAmt = txsFee(redeemAssetAmt, TxType.REDEEM);
         netRedeemAssetAmt = redeemAssetAmt - feeAmt;
     }
@@ -841,69 +875,75 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
 
     /**
      * @notice Process pending redeems (T+N discipline enforced by operator off-chain)
-     * @dev Uses snapshotted ratio from snapshotPendingRedeemRatio(). Reverts if ratio not set.
+     * @dev Uses offchainShareAmount from queue entry (ratio baked in at requestRedeem time).
      *      Operator must pass an explicit positive _len; _len = 0 makes the loop a no-op
      *      and reverts with NoPendingRedeemsReady (process-all sentinel is not supported here).
      * @param _len Number of pending requests to process (must be > 0)
+     * @param _totalAsset Actual redeem asset amount received from offchain share liquidation (sanity bound)
      */
-    function processPendingRedeems(uint256 _len) external onlyRole(OPERATOR_ROLE) {
+    function processPendingRedeems(uint256 _len, uint256 _totalAsset) external onlyRole(OPERATOR_ROLE) {
         uint256 processed;
         uint256 currentPrice = getPrice();
+        uint256 runningTotal;
 
         while (processed < _len && !pendingRedeemQueue.empty()) {
-            if (!_processSinglePendingRedeem(currentPrice)) {
+            (bool success, uint256 assetAmt) = _processSinglePendingRedeem(currentPrice);
+            if (!success) {
                 break;
             }
+            runningTotal += assetAmt;
             unchecked {
                 ++processed;
             }
         }
 
         if (processed == 0) revert NoPendingRedeemsReady();
+
+        // Sanity bound: oracle-derived total must not exceed operator-supplied actual
+        if (runningTotal > _totalAsset) revert InsufficientSettlementFunds(runningTotal, _totalAsset);
     }
 
     /**
      * @notice Internal helper to process a single pending redeem
      * @param currentPrice The current T+2 price to apply
      * @return success True if redeem was processed, false if not ready yet
+     * @return redeemAssetAmt The oracle-derived redeemAsset amount for this entry
      */
-    function _processSinglePendingRedeem(uint256 currentPrice) internal returns (bool success) {
+    function _processSinglePendingRedeem(uint256 currentPrice) internal returns (bool success, uint256 redeemAssetAmt) {
         bytes memory data = pendingRedeemQueue.front();
         (
             address sender,
             address receiver,
-            uint256 shareAmount, // Full share amount (no fee deduction)
+            uint256 tokenAmount,
+            uint256 offchainShareAmount,
             uint256 requestTimestamp,
             bytes32 pendingId
         ) = _decodePendingRedeemData(data);
 
         // Check if convertRedeemRequestsDelay has elapsed
         if (block.timestamp < requestTimestamp + convertRedeemRequestsDelay) {
-            return false;
+            return (false, 0);
         }
-
-        // Ratio must be snapshotted before processing
-        uint256 currentRatio = snapshotRatios[pendingId];
-        if (currentRatio == 0) revert RatioNotSnapshotted(pendingId);
 
         _validateKyc(sender, receiver);
 
-        // Remove from pending queue and migrate snapshot to final ID
+        // Remove from pending queue
         pendingRedeemQueue.popFront();
-        pendingRedeemInfo[receiver] -= shareAmount;
+        pendingRedeemInfo[receiver] -= tokenAmount;
 
-        // Price redeem proceeds using the snapshotted ratio
-        uint256 redeemAssetAmt = _redeemAssetAmount(shareAmount, currentRatio, currentPrice);
+        // Price redeem proceeds using the offchainShareAmount (ratio already baked in at request time)
+        redeemAssetAmt = _redeemAssetAmount(offchainShareAmount, currentPrice);
 
-        // Calculate fee in redeemAsset (not in token!)
+        // Calculate fee in redeemAsset
         uint256 feeAssetAmt = txsFee(redeemAssetAmt, TxType.REDEEM);
 
-        // Add to final redeem queue with asset fee
+        // Add to final redeem queue
         bytes32 finalId = keccak256(
             abi.encode(
                 sender,
                 receiver,
-                shareAmount,
+                tokenAmount,
+                offchainShareAmount,
                 redeemAssetAmt,
                 feeAssetAmt,
                 requestTimestamp,
@@ -913,30 +953,23 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
         );
 
         redeemQueue.pushBack(
-            abi.encode(sender, receiver, shareAmount, redeemAssetAmt, feeAssetAmt, requestTimestamp, finalId)
+            abi.encode(sender, receiver, tokenAmount, offchainShareAmount, redeemAssetAmt, feeAssetAmt, requestTimestamp, finalId)
         );
 
-        // Migrate ratio from pending ID to final ID (for revertRedeemToPending), then clean up
-        snapshotRatios[finalId] = currentRatio;
-        delete snapshotRatios[pendingId];
+        redeemInfo[receiver] += tokenAmount;
+        // Note: totalRedeemQueueTokens NOT incremented here — already done in requestRedeem
+        // Note: totalMgtFeeUnclaimed NOT decremented here — already done in requestRedeem
 
-        redeemInfo[receiver] += shareAmount;
-        totalRedeemQueueShares += shareAmount;
+        emit ProcessPendingRedeem(sender, receiver, tokenAmount, currentPrice, pendingId, finalId);
 
-        // Decrement live mgt fee counter when fee tokens are priced in.
-        if (sender == mgtFeeTo && totalMgtFeeUnclaimed >= shareAmount) {
-            totalMgtFeeUnclaimed -= shareAmount;
-        }
-
-        emit ProcessPendingRedeem(sender, receiver, shareAmount, currentPrice, pendingId, finalId);
-
-        return true;
+        return (true, redeemAssetAmt);
     }
 
     /**
      * @notice Cancel pending redeem requests and refund full token amount
      * @dev User specified they CANNOT cancel pending redeems - only MAINTAINER can do emergency cancellations
-     *      No token fees taken (fees are in redeemAsset)
+     *      No token fees taken (fees are in redeemAsset).
+     *      Restores offchainShares and totalRedeemQueueTokens (reverse of requestRedeem).
      * @param _len Number of pending requests to cancel
      */
     function cancelPendingRedeem(uint256 _len) external onlyRole(MAINTAINER_ROLE) {
@@ -947,67 +980,35 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
             (
                 address sender,
                 address receiver,
-                uint256 shareAmount, // Full share amount
+                uint256 tokenAmount,
+                uint256 offchainShareAmount,
                 ,
                 // requestTimestamp - not needed
                 bytes32 id
             ) = _decodePendingRedeemData(data);
 
-            pendingRedeemInfo[receiver] -= shareAmount;
+            pendingRedeemInfo[receiver] -= tokenAmount;
+
+            // Restore accounting (reverse of requestRedeem)
+            offchainShares += offchainShareAmount;
+            totalRedeemQueueTokens -= tokenAmount;
+
+            // Restore mgtFeeUnclaimed if this was a fee redeem
+            if (sender == mgtFeeTo) {
+                totalMgtFeeUnclaimed += tokenAmount;
+            }
 
             unchecked {
                 --_len;
             }
 
-            _refundOrEscrow(sender, shareAmount);
-            delete snapshotRatios[id];
+            _refundOrEscrow(sender, tokenAmount);
 
-            emit CancelPendingRedeem(sender, receiver, shareAmount, id);
+            emit CancelPendingRedeem(sender, receiver, tokenAmount, id);
         }
     }
 
-    /**
-     * @notice Snapshot current sharesPerToken ratio into pending redeem entries within [_start, _end)
-     * @dev Called daily at 4pm SGT after the daily batch (processPendingRedeems, processDepositQueue,
-     *      updateEpoch). Operator passes explicit indices so a large queue can be snapshotted in
-     *      chunks (gas budgeting) or partially re-snapshotted to recover from a botched run.
-     *      Existing non-zero ratios within the range are skipped (idempotent overwrite is via
-     *      setSnapshotRatio). Emits SnapshotPendingRedeemRatio for every id newly written.
-     * @param _start Inclusive start index in pendingRedeemQueue
-     * @param _end Exclusive end index in pendingRedeemQueue (must satisfy _start < _end <= queueLen)
-     */
-    function snapshotPendingRedeemRatio(uint256 _start, uint256 _end) external onlyRole(OPERATOR_ROLE) {
-        uint256 queueLen = pendingRedeemQueue.length();
-        if (queueLen == 0) revert EmptyQueue();
-        if (_end > queueLen || _start >= _end) revert InvalidInput(_end);
-
-        uint256 currentRatio = _sharesPerToken();
-
-        for (uint256 i = _start; i < _end; ) {
-            (, , , , bytes32 id) = _decodePendingRedeemData(pendingRedeemQueue.at(i));
-
-            if (snapshotRatios[id] == 0) {
-                snapshotRatios[id] = currentRatio;
-                emit SnapshotPendingRedeemRatio(id, currentRatio);
-            }
-
-            unchecked {
-                ++i;
-            }
-        }
-    }
-
-    /**
-     * @notice Manually set snapshot ratio for a pending redeem entry
-     * @dev Fallback for failed auto-snapshots or corrections. Overwrites any existing value.
-     * @param _id Pending redeem ID
-     * @param _ratio Shares-per-token ratio in 1e18 precision
-     */
-    function setSnapshotRatio(bytes32 _id, uint256 _ratio) external onlyRole(MAINTAINER_ROLE) {
-        if (_ratio == 0 || _ratio > 1e18) revert InvalidInput(_ratio);
-        snapshotRatios[_id] = _ratio;
-        emit SetSnapshotRatio(_id, _ratio);
-    }
+    // snapshotPendingRedeemRatio and setSnapshotRatio removed — ratio is now baked into queue entries at requestRedeem time
 
     /*//////////////////////////////////////////////////////////////
                       REDEMPTION QUEUE MANAGEMENT
@@ -1015,7 +1016,9 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
 
     /**
      * @notice Process redeem queue with pre-calculated amounts
-     * @dev Burns full token amount, splits redeemAsset between user and txFeeTo
+     * @dev Burns full token amount, splits redeemAsset between user and txFeeTo.
+     *      Decrements totalRedeemQueueTokens (token supply decreases by same amount via burn,
+     *      keeping the sharesPerToken ratio invariant).
      * @param _len Number of requests to process (0 = process all)
      */
     function processRedeemQueue(uint256 _len) external onlyRole(OPERATOR_ROLE) {
@@ -1026,11 +1029,11 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
             (
                 address sender,
                 address receiver,
-                uint256 shareAmount, // Full share amount to burn
-                uint256 redeemAssetAmt, // Pre-calculated redeemAsset at T+2
-                uint256 feeAssetAmt, // Fee in redeemAsset
-                ,
-                // requestTimestamp - not needed for processing
+                uint256 tokenAmount,
+                , // offchainShareAmount — not needed for processing
+                uint256 redeemAssetAmt,
+                uint256 feeAssetAmt,
+                , // requestTimestamp
                 bytes32 id
             ) = _decodeRedeemData(data);
 
@@ -1043,15 +1046,14 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
             }
 
             redeemQueue.popFront();
-            redeemInfo[receiver] -= shareAmount;
-            totalRedeemQueueShares -= shareAmount;
-            delete snapshotRatios[id];
+            redeemInfo[receiver] -= tokenAmount;
+            totalRedeemQueueTokens -= tokenAmount;
             unchecked {
                 ++count;
             }
 
             // Burn full token amount
-            token.burn(address(this), shareAmount);
+            token.burn(address(this), tokenAmount);
 
             // Split redeemAsset: fee to txFeeTo, net to user
             if (feeAssetAmt > 0) {
@@ -1062,13 +1064,14 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
             uint256 netAssetAmt = redeemAssetAmt - feeAssetAmt;
             IERC20(redeemAsset).safeTransfer(receiver, netAssetAmt);
 
-            emit ProcessRedeem(sender, receiver, shareAmount, netAssetAmt, id);
+            emit ProcessRedeem(sender, receiver, tokenAmount, netAssetAmt, id);
         }
     }
 
     /**
      * @notice Cancel redeem requests and refund full token amount
-     * @dev Refunds full amount - no token fees taken (fees are in redeemAsset)
+     * @dev Refunds full amount - no token fees taken (fees are in redeemAsset).
+     *      Restores offchainShares and totalRedeemQueueTokens (reverse of requestRedeem).
      * @param _len Number of requests to cancel
      */
     function cancelRedeem(uint256 _len) public onlyRole(MAINTAINER_ROLE) {
@@ -1079,36 +1082,35 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
             (
                 address sender,
                 address receiver,
-                uint256 shareAmount, // Full share amount
-                ,
-                ,
-                ,
-                // redeemAssetAmt - not needed
-                // feeAssetAmt - not needed
-                // requestTimestamp - not needed
+                uint256 tokenAmount,
+                uint256 offchainShareAmount,
+                , // redeemAssetAmt
+                , // feeAssetAmt
+                , // requestTimestamp
                 bytes32 id
             ) = _decodeRedeemData(data);
 
-            redeemInfo[receiver] -= shareAmount;
-            totalRedeemQueueShares -= shareAmount;
-            delete snapshotRatios[id];
+            redeemInfo[receiver] -= tokenAmount;
+            totalRedeemQueueTokens -= tokenAmount;
 
-            // Restore the live mgt fee counter: pending->final had decremented it for fee-owned entries.
-            // Cancelling from the final queue means those fee tokens are live again.
+            // Restore offchainShares (reverse of requestRedeem)
+            offchainShares += offchainShareAmount;
+
+            // Restore mgtFeeUnclaimed if this was a fee redeem
             if (sender == mgtFeeTo) {
-                totalMgtFeeUnclaimed += shareAmount;
+                totalMgtFeeUnclaimed += tokenAmount;
             }
 
             unchecked {
                 --_len;
             }
 
-            _refundOrEscrow(sender, shareAmount);
+            _refundOrEscrow(sender, tokenAmount);
 
             emit CancelProcessRedeem(
                 sender,
                 receiver,
-                shareAmount,
+                tokenAmount,
                 0, // No token fee
                 id
             );
@@ -1150,58 +1152,41 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
 
     /**
      * @notice Revert redeems from final queue back to pending queue
-     * @dev Used when wrong T+2 price was applied - moves items back to pending for repricing
-     * @dev Maintains the same order: redeemQueue [a, b] -> pendingQueue [a, b]
-     * @dev Pops from back of redeem queue and pushes to front of pending queue
-     * @dev Uses original timestamp from when redeem was first requested
+     * @dev Used when wrong T+2 price was applied - moves items back to pending for repricing.
+     *      Simplified: no snapshot migration needed (ratio baked into queue entry at request time).
+     *      totalRedeemQueueTokens and offchainShares are NOT modified — they were adjusted at
+     *      requestRedeem time and cover both pending and final queue entries.
      * @param _len Number of redeems to revert (0 = revert all)
      */
     function revertRedeemToPending(uint256 _len) external onlyRole(OPERATOR_ROLE) {
         _len = _validateQueueProcessing(redeemQueue.length(), _len);
 
-        // Pop from back of redeem queue and push to front of pending queue
-        // This maintains order: redeemQueue [a, b] -> pendingQueue [a, b]
         for (uint256 i = 0; i < _len; ) {
             bytes memory data = redeemQueue.popBack();
             (
                 address sender,
                 address receiver,
-                uint256 shareAmount, // Full share amount
-                ,
-                ,
-                // redeemAssetAmt - discard (was calculated with wrong price)
-                // feeAssetAmt - discard (was calculated with wrong price)
-                uint256 requestTimestamp, // Keep original timestamp
+                uint256 tokenAmount,
+                uint256 offchainShareAmount,
+                , // redeemAssetAmt — discard (computed with wrong price)
+                , // feeAssetAmt — discard
+                uint256 requestTimestamp,
                 bytes32 oldId
             ) = _decodeRedeemData(data);
 
-            redeemInfo[receiver] -= shareAmount;
-            totalRedeemQueueShares -= shareAmount;
+            redeemInfo[receiver] -= tokenAmount;
+            // Note: totalRedeemQueueTokens unchanged (covers both queues)
+            // Note: offchainShares unchanged (adjusted at requestRedeem time)
 
-            // Restore the live mgt fee counter: pending->final had decremented it for fee-owned entries.
-            // Moving back to pending means those fee tokens are live again and will be re-decremented
-            // when they are re-processed through _processSinglePendingRedeem.
-            if (sender == mgtFeeTo) {
-                totalMgtFeeUnclaimed += shareAmount;
-            }
+            bytes32 newPendingId = keccak256(
+                abi.encode(sender, receiver, tokenAmount, offchainShareAmount, requestTimestamp, _nonce++)
+            );
+            pendingRedeemQueue.pushFront(
+                abi.encode(sender, receiver, tokenAmount, offchainShareAmount, requestTimestamp, newPendingId)
+            );
+            pendingRedeemInfo[receiver] += tokenAmount;
 
-            // Create new pending redeem entry with original timestamp
-            bytes32 newPendingId = keccak256(abi.encode(sender, receiver, shareAmount, requestTimestamp, _nonce++));
-
-            // Encode and push to front of pending queue
-            bytes memory newPendingData = abi.encode(sender, receiver, shareAmount, requestTimestamp, newPendingId);
-            pendingRedeemQueue.pushFront(newPendingData);
-
-            // Update pendingRedeemInfo
-            pendingRedeemInfo[receiver] += shareAmount;
-
-            // Restore snapshot ratio from final ID to new pending ID, then clean up.
-            // oldId always has a non-zero ratio: _processSinglePendingRedeem reverts if the
-            // pending ratio is unset, then writes snapshotRatios[finalId] before queuing here.
-            snapshotRatios[newPendingId] = snapshotRatios[oldId];
-            delete snapshotRatios[oldId];
-
-            emit RevertRedeemToPending(sender, receiver, shareAmount, oldId, newPendingId);
+            emit RevertRedeemToPending(sender, receiver, tokenAmount, oldId, newPendingId);
 
             unchecked {
                 ++i;
@@ -1214,7 +1199,8 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
      * @param _index Queue index to query
      * @return sender Sender address
      * @return receiver Receiver address
-     * @return shareAmount Full share amount
+     * @return tokenAmount Full token amount
+     * @return offchainShareAmount Offchain share amount (ratio baked in at request time)
      * @return redeemAssetAmt Pre-calculated redeemAsset amount (from T+2)
      * @return feeAssetAmt Fee amount in redeemAsset
      * @return requestTimestamp Original timestamp from pending queue
@@ -1228,7 +1214,8 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
         returns (
             address sender,
             address receiver,
-            uint256 shareAmount,
+            uint256 tokenAmount,
+            uint256 offchainShareAmount,
             uint256 redeemAssetAmt,
             uint256 feeAssetAmt,
             uint256 requestTimestamp,
@@ -1236,11 +1223,11 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
         )
     {
         if (redeemQueue.empty() || _index > redeemQueue.length() - 1) {
-            return (address(0), address(0), 0, 0, 0, 0, 0x0);
+            return (address(0), address(0), 0, 0, 0, 0, 0, 0x0);
         }
 
         bytes memory data = bytes(redeemQueue.at(_index));
-        (sender, receiver, shareAmount, redeemAssetAmt, feeAssetAmt, requestTimestamp, id) = _decodeRedeemData(data);
+        (sender, receiver, tokenAmount, offchainShareAmount, redeemAssetAmt, feeAssetAmt, requestTimestamp, id) = _decodeRedeemData(data);
     }
 
     /**
@@ -1260,7 +1247,8 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
      * @param _index Queue index to query
      * @return sender Sender address
      * @return receiver Receiver address
-     * @return shareAmount Full share amount
+     * @return tokenAmount Full token amount
+     * @return offchainShareAmount Offchain share amount (ratio baked in at request time)
      * @return requestTimestamp Request timestamp
      * @return id Pending redeem ID
      */
@@ -1269,13 +1257,13 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     )
         external
         view
-        returns (address sender, address receiver, uint256 shareAmount, uint256 requestTimestamp, bytes32 id)
+        returns (address sender, address receiver, uint256 tokenAmount, uint256 offchainShareAmount, uint256 requestTimestamp, bytes32 id)
     {
         if (pendingRedeemQueue.empty() || _index > pendingRedeemQueue.length() - 1) {
-            return (address(0), address(0), 0, 0, 0x0);
+            return (address(0), address(0), 0, 0, 0, 0x0);
         }
         bytes memory data = bytes(pendingRedeemQueue.at(_index));
-        (sender, receiver, shareAmount, requestTimestamp, id) = _decodePendingRedeemData(data);
+        (sender, receiver, tokenAmount, offchainShareAmount, requestTimestamp, id) = _decodePendingRedeemData(data);
     }
 
     /**
@@ -1426,13 +1414,10 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
      * @notice Update epoch and accrue management fees based on offchainShares
      * @dev Fee is charged on the offchain BNY value (the real AUM), not on circulating HYBOND.
      *      This matches how a real-world fund charges mgmt fees on AUM rather than on issued shares.
-     *      Can only be called after timeBuffer has elapsed since last update. Reverts
-     *      PendingProposalExists if an offchain-shares proposal is unconfirmed — running with
-     *      stale offchainShares would bake in wrong dilution.
+     *      Can only be called after timeBuffer has elapsed since last update.
      */
     function updateEpoch() external onlyRole(OPERATOR_ROLE) {
         if (mgtFeeRate == 0) revert MgtFeeDisabled();
-        if (proposedOffchainShares != 0) revert PendingProposalExists(proposedOffchainShares);
         if (lastUpdateTS != 0 && block.timestamp < lastUpdateTS + timeBuffer) {
             revert UpdateTooEarly(block.timestamp);
         }
@@ -1459,14 +1444,13 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
 
     /**
      * @notice Get circulating token supply
-     * @dev Circulating = Total Supply - Shares committed to the final redeem queue - Live mgt fee tokens.
-     *      Uses totalMgtFeeUnclaimed (live) so that fee redemptions don't move circulating. Moves only on
-     *      user deposits, user redemptions reaching the final queue, and user-share burns.
+     * @dev Circulating = Total Supply - Tokens committed to redeem queues (pending + final) - Live mgt fee tokens.
+     *      totalRedeemQueueTokens is incremented at requestRedeem time, covering both pending and final queues.
      * @return supply Circulating token supply
      */
     function circulatingSupply() public view returns (uint256 supply) {
         uint256 totalSupply = IERC20(address(token)).totalSupply();
-        supply = totalSupply - totalRedeemQueueShares - totalMgtFeeUnclaimed;
+        supply = totalSupply - totalRedeemQueueTokens - totalMgtFeeUnclaimed;
     }
 
     /**
@@ -1483,31 +1467,16 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     //////////////////////////////////////////////////////////////*/
 
     /**
-     * @notice Propose a new offchain BNY share value
-     * @dev Latest-wins: overwrites any prior unconfirmed proposal
-     * @param _supply Proposed value (18-decimal convention, must match HYBOND totalSupply scale)
+     * @notice Admin override for rare events (share splits, reconciliation).
+     * @dev Should almost never be called. Use only for error correction or corporate actions.
+     *      offchainShares is normally maintained automatically by processDepositQueue (increment)
+     *      and requestRedeem (decrement).
+     * @param _newValue The new offchainShares value
      */
-    function proposeOffchainShares(uint256 _supply) external onlyRole(OPERATOR_ROLE) {
-        if (_supply == 0) revert InvalidAmount();
-        proposedOffchainShares = _supply;
-        emit ProposeOffchainShares(_msgSender(), _supply);
-    }
-
-    /**
-     * @notice Confirm the pending proposed offchain share value
-     * @dev Caller must read proposedOffchainShares off-chain and echo it here; any mismatch
-     *      reverts, ensuring the confirmer independently verifies the value proposed by OPERATOR_ROLE.
-     * @param _supply Must equal proposedOffchainShares; anything else reverts
-     */
-    function confirmOffchainShares(uint256 _supply) external onlyRole(CONFIRM_ROLE) {
-        uint256 pending = proposedOffchainShares;
-        if (pending == 0) revert InvalidAmount();
-        if (_supply != pending) revert InvalidInput(_supply);
-
+    function updateOffchainShares(uint256 _newValue) external onlyRole(MAINTAINER_ROLE) {
         uint256 previous = offchainShares;
-        offchainShares = pending;
-        proposedOffchainShares = 0;
-        emit ConfirmOffchainShares(_msgSender(), pending, previous);
+        offchainShares = _newValue;
+        emit UpdateOffchainShares(_msgSender(), _newValue, previous);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -1584,37 +1553,34 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
 
     /**
      * @notice Calculate the current shares-per-token ratio in 1e18 precision
-     * @dev Formula: offchainShares / (totalSupply - totalRedeemQueueShares), scaled by 1e18.
-     *      Denominator excludes the final redeem queue (those shares are already priced).
-     *      Pending-redeem-queue shares are included in the denominator.
+     * @dev Formula: offchainShares / (totalSupply - totalRedeemQueueTokens), scaled by 1e18.
+     *      Denominator excludes tokens committed to both pending and final redeem queues
+     *      (totalRedeemQueueTokens is incremented at requestRedeem time, covering both).
      *
      *      Returns the 1e18 fallback when either denom is zero (bootstrap / full exit) or
-     *      offchainShares has not yet been set by the bot (pre-first-sync). In the pre-sync
-     *      window deposits and redeems settle at 1:1 against the underlying asset, which is
-     *      economically fair: depositors mint at 1:1 and redeemers get their deposit back.
+     *      offchainShares has not yet been set (pre-first-sync). In the pre-sync window
+     *      deposits and redeems settle at 1:1 against the underlying asset.
      *      updateEpoch is a no-op in this window because dailyFee = offchainShares * rate = 0.
      */
     function _sharesPerToken() internal view returns (uint256 ratio) {
         uint256 totalSupply = IERC20(address(token)).totalSupply();
-        uint256 denom = totalSupply - totalRedeemQueueShares;
+        uint256 denom = totalSupply - totalRedeemQueueTokens;
         if (offchainShares == 0 || denom == 0) return 1e18;
         ratio = Math.mulDiv(offchainShares, 1e18, denom);
     }
 
     /**
-     * @notice Convert token amount into redeem asset amount using a ratio and price snapshot
-     * @param _shareAmount Full token amount being redeemed
-     * @param _ratio Shares-per-token ratio in 1e18 precision
-     * @param _price Price snapshot in 1e18 precision
+     * @notice Convert offchain share amount into redeem asset amount using a price
+     * @dev offchainShareAmount already has the sharesPerToken ratio baked in (computed at requestRedeem time)
+     * @param _offchainShareAmount Offchain share amount (ratio already applied)
+     * @param _price Price in 1e18 precision
      */
     function _redeemAssetAmount(
-        uint256 _shareAmount,
-        uint256 _ratio,
+        uint256 _offchainShareAmount,
         uint256 _price
     ) internal view returns (uint256 redeemAssetAmt) {
-        uint256 backedShareAmount = Math.mulDiv(_shareAmount, _ratio, 1e18);
         redeemAssetAmt = _trimAsset(
-            Math.mulDiv(convertToUnderlying(redeemAsset, backedShareAmount), _price, 1e18),
+            Math.mulDiv(convertToUnderlying(redeemAsset, _offchainShareAmount), _price, 1e18),
             redeemAsset
         );
     }
@@ -1662,11 +1628,12 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     }
 
     /**
-     * @notice Decode redeem queue data (7 fields - includes redeemAssetAmt, feeAssetAmt, and requestTimestamp)
+     * @notice Decode redeem queue data (8 fields - includes offchainShareAmount, redeemAssetAmt, feeAssetAmt, and requestTimestamp)
      * @param _data Encoded redeem data
      * @return sender Sender address
      * @return receiver Receiver address
      * @return tokenAmount Full token amount (no fee deduction)
+     * @return offchainShareAmount Offchain share amount (ratio baked in at request time)
      * @return redeemAssetAmt Pre-calculated redeemAsset amount (from T+2 pricing)
      * @return feeAssetAmt Fee amount in redeemAsset
      * @return requestTimestamp Original timestamp from pending queue
@@ -1681,15 +1648,16 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
             address sender,
             address receiver,
             uint256 tokenAmount,
+            uint256 offchainShareAmount,
             uint256 redeemAssetAmt,
             uint256 feeAssetAmt,
             uint256 requestTimestamp,
             bytes32 id
         )
     {
-        (sender, receiver, tokenAmount, redeemAssetAmt, feeAssetAmt, requestTimestamp, id) = abi.decode(
+        (sender, receiver, tokenAmount, offchainShareAmount, redeemAssetAmt, feeAssetAmt, requestTimestamp, id) = abi.decode(
             _data,
-            (address, address, uint256, uint256, uint256, uint256, bytes32)
+            (address, address, uint256, uint256, uint256, uint256, uint256, bytes32)
         );
     }
 
@@ -1699,6 +1667,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
      * @return sender Sender address
      * @return receiver Receiver address
      * @return tokenAmount Full token amount (no fee deduction)
+     * @return offchainShareAmount Offchain share amount (ratio baked in at request time)
      * @return requestTimestamp Timestamp of redeem request
      * @return id Queue entry ID
      */
@@ -1707,11 +1676,11 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     )
         internal
         pure
-        returns (address sender, address receiver, uint256 tokenAmount, uint256 requestTimestamp, bytes32 id)
+        returns (address sender, address receiver, uint256 tokenAmount, uint256 offchainShareAmount, uint256 requestTimestamp, bytes32 id)
     {
-        (sender, receiver, tokenAmount, requestTimestamp, id) = abi.decode(
+        (sender, receiver, tokenAmount, offchainShareAmount, requestTimestamp, id) = abi.decode(
             _data,
-            (address, address, uint256, uint256, bytes32)
+            (address, address, uint256, uint256, uint256, bytes32)
         );
     }
 
