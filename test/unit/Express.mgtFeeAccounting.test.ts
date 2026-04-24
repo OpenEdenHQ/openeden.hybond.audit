@@ -1,20 +1,16 @@
 import { expect } from 'chai';
 import { ethers } from 'hardhat';
 import { loadFixture, time } from '@nomicfoundation/hardhat-network-helpers';
-import {
-  bootstrapAndSeedOffchainShares,
-  deployExpressContracts,
-} from '../fixtures/expressDeployments';
+import { deployExpressContracts } from '../fixtures/expressDeployments';
 
 const ONE = ethers.parseUnits('1', 18);
+const LARGE_TOTAL_ASSET = ethers.parseUnits('10000000', 18);
 
 describe('Express - Management Fee Accounting (spreadsheet simulation)', function () {
   it('sharesPerToken and circulatingSupply behave correctly across fee accrual + fee redeem cycle', async function () {
     // 1. Arrange
-    const { express, oem, usdo, maintainer, operator, treasury, user1, admin } =
+    const { express, oem, usdo, maintainer, operator, treasury, user1 } =
       await loadFixture(deployExpressContracts);
-    const signers = await ethers.getSigners();
-    const confirmer = signers[10];
 
     // 10% annual fee: large enough that 3 days of accrual exceed the 50 OEM redeemMinimum
     // from the fixture (100000 * 0.10 / 365 ~= 27.4 OEM/day, 3 days ~= 82.2 OEM > 50).
@@ -27,14 +23,7 @@ describe('Express - Management Fee Accounting (spreadsheet simulation)', functio
     await express
       .connect(user1)
       .requestDeposit(await usdo.getAddress(), depositAmount, user1.address);
-    await express.connect(maintainer).processDepositQueue(1);
-
-    // Seed offchainShares so sharesPerToken == 1e18 and subsequent redeems are unblocked.
-    const CONFIRM_ROLE = await express.CONFIRM_ROLE();
-    await express.connect(admin).grantRole(CONFIRM_ROLE, confirmer.address);
-    const supplyAfterDeposit = await oem.totalSupply();
-    await express.connect(operator).proposeOffchainShares(supplyAfterDeposit);
-    await express.connect(confirmer).confirmOffchainShares(supplyAfterDeposit);
+    await express.connect(maintainer).processDepositQueue(1, depositAmount);
 
     expect(await oem.totalSupply()).to.equal(depositAmount);
     expect(await express.circulatingSupply()).to.equal(depositAmount);
@@ -69,30 +58,30 @@ describe('Express - Management Fee Accounting (spreadsheet simulation)', functio
     const feeBalance = await oem.balanceOf(treasury.address);
     expect(feeBalance).to.equal(totalFeesAccruedBeforeRedeem);
 
-    await express.connect(treasury).requestRedeem(treasury.address, feeBalance);
+    // mgtFeeTo requestRedeem with amount 0 (overridden to totalMgtFeeUnclaimed)
+    await express.connect(treasury).requestRedeem(treasury.address, 0);
+
+    // totalMgtFeeUnclaimed zeroed immediately at request time (M-1 fix)
+    expect(await express.totalMgtFeeUnclaimed()).to.equal(0n);
 
     // Advance past T+2.
     await time.increase(2n * 24n * 60n * 60n);
 
-    // Snapshot the pending-redeem ratio.
-    await express.connect(operator).snapshotPendingRedeemRatio(0, 1n);
-
     // Capture the ratio right before processPendingRedeems.
     const ratioBeforePending = await express.sharesPerToken();
 
-    // Process pending → final queue.
-    await express.connect(operator).processPendingRedeems(1);
+    // Process pending -> final queue.
+    await express.connect(operator).processPendingRedeems(1, LARGE_TOTAL_ASSET);
 
-    // Invariant 2: after pending→final, redeem queue excludes the fee shares from denom,
-    // restoring ratio to 1e18; unclaimed drops to 0.
-    expect(await express.sharesPerToken()).to.equal(ONE);
+    // Ratio unchanged after pending->final (invariance)
+    expect(await express.sharesPerToken()).to.equal(ratioBeforePending);
     expect(await express.totalMgtFeeUnclaimed()).to.equal(0n);
 
     // Process final queue (burn).
     await express.connect(operator).processRedeemQueue(1);
 
-    // Invariant 3: burn leaves ratio at 1e18 (fees burned, offchainShares == remaining totalSupply).
-    expect(await express.sharesPerToken()).to.equal(ONE);
+    // Ratio unchanged after burn (invariance)
+    expect(await express.sharesPerToken()).to.equal(ratioBeforePending);
     expect(await express.totalMgtFeeUnclaimed()).to.equal(0n);
     expect(await express.circulatingSupply()).to.equal(depositAmount);
     expect(await oem.totalSupply()).to.equal(depositAmount);
@@ -110,5 +99,67 @@ describe('Express - Management Fee Accounting (spreadsheet simulation)', functio
     expect(await express.totalMgtFeeUnclaimed()).to.equal(newFees);
     expect(await express.circulatingSupply()).to.equal(depositAmount);
     expect(await oem.totalSupply()).to.equal(depositAmount + newFees);
+  });
+
+  it('M-1 regression: mgtFeeTo cannot double-redeem', async function () {
+    const { express, oem, usdo, maintainer, operator, treasury, user1 } =
+      await loadFixture(deployExpressContracts);
+
+    await express.connect(maintainer).updateMgtFeeRate(1000);
+    const depositAmount = 100000n * ONE;
+
+    await express
+      .connect(user1)
+      .requestDeposit(await usdo.getAddress(), depositAmount, user1.address);
+    await express.connect(maintainer).processDepositQueue(1, depositAmount);
+
+    // Accrue fees
+    const timeBuffer = await express.timeBuffer();
+    await time.increase(timeBuffer);
+    await express.connect(operator).updateEpoch();
+
+    const feeBalance = await express.totalMgtFeeUnclaimed();
+    expect(feeBalance).to.be.gt(0n);
+
+    // user1 transfers some tokens to treasury (accidental non-fee shares)
+    await oem.connect(user1).transfer(treasury.address, ethers.parseUnits('1000', 18));
+
+    await oem.connect(treasury).approve(await express.getAddress(), ethers.MaxUint256);
+
+    // First requestRedeem succeeds — zeroes totalMgtFeeUnclaimed
+    await express.connect(treasury).requestRedeem(treasury.address, 0);
+    expect(await express.totalMgtFeeUnclaimed()).to.equal(0n);
+
+    // Second requestRedeem MUST revert — totalMgtFeeUnclaimed is now 0
+    await expect(
+      express.connect(treasury).requestRedeem(treasury.address, 0)
+    ).to.be.revertedWithCustomError(express, 'InvalidAmount');
+  });
+
+  it('cancelPendingRedeem restores totalMgtFeeUnclaimed for mgtFeeTo entries', async function () {
+    const { express, oem, usdo, maintainer, operator, treasury, user1 } =
+      await loadFixture(deployExpressContracts);
+
+    await express.connect(maintainer).updateMgtFeeRate(1000);
+    const depositAmount = 100000n * ONE;
+
+    await express
+      .connect(user1)
+      .requestDeposit(await usdo.getAddress(), depositAmount, user1.address);
+    await express.connect(maintainer).processDepositQueue(1, depositAmount);
+
+    const timeBuffer = await express.timeBuffer();
+    await time.increase(timeBuffer);
+    await express.connect(operator).updateEpoch();
+
+    const totalFees = await express.totalMgtFeeUnclaimed();
+
+    await oem.connect(treasury).approve(await express.getAddress(), ethers.MaxUint256);
+    await express.connect(treasury).requestRedeem(treasury.address, 0);
+    expect(await express.totalMgtFeeUnclaimed()).to.equal(0n);
+
+    // Cancel restores
+    await express.connect(maintainer).cancelPendingRedeem(1);
+    expect(await express.totalMgtFeeUnclaimed()).to.equal(totalFees);
   });
 });
