@@ -181,7 +181,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     event UpdateTxFeeTo(address indexed txFeeTo);
     event UpdateMgtFeeTo(address indexed mgtFeeTo);
     event UpdateAssetRegistry(address indexed newRegistry);
-    event UpdateEpoch(uint256 dailyFee, uint256 offchainShares);
+    event UpdateEpoch(uint256 dailyFeeShares, uint256 dailyFeeTokens, uint256 offchainShares);
     event UpdateTimeBuffer(uint256 timeBuffer);
     event UpdatePriceOracle(address indexed priceOracle);
     event UpdateMaxStalePeriod(uint256 maxStalePeriod);
@@ -389,6 +389,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
      */
     function updatePriceOracle(address _address) external onlyRole(MAINTAINER_ROLE) {
         if (_address == address(0)) revert InvalidAddress();
+        _requireQueuesEmpty();
         priceOracle = IPriceFeed(_address);
         emit UpdatePriceOracle(_address);
     }
@@ -398,6 +399,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
      * @param _maxStalePeriod Maximum staleness in seconds (e.g., 86400 for 24 hours)
      */
     function updateMaxStalePeriod(uint256 _maxStalePeriod) external onlyRole(MAINTAINER_ROLE) {
+        _requireQueuesEmpty();
         maxStalePeriod = _maxStalePeriod;
         emit UpdateMaxStalePeriod(_maxStalePeriod);
     }
@@ -448,6 +450,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
      */
     function updateMgtFeeTo(address _address) external onlyRole(MAINTAINER_ROLE) {
         if (_address == address(0)) revert InvalidAddress();
+        _requireQueuesEmpty();
         mgtFeeTo = _address;
         emit UpdateMgtFeeTo(_address);
     }
@@ -481,6 +484,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
      */
     function updateDepositFeeRate(uint256 _rate) external onlyRole(MAINTAINER_ROLE) {
         if (_rate >= BPS_BASE) revert InvalidInput(_rate);
+        _requireQueuesEmpty();
         depositFeeRate = _rate;
         emit UpdateDepositFeeRate(_rate);
     }
@@ -491,6 +495,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
      */
     function updateRedeemFeeRate(uint256 _rate) external onlyRole(MAINTAINER_ROLE) {
         if (_rate >= BPS_BASE) revert InvalidInput(_rate);
+        _requireQueuesEmpty();
         redeemFeeRate = _rate;
         emit UpdateRedeemFeeRate(_rate);
     }
@@ -511,6 +516,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
      */
     function updateTrimDecimals(uint8 _decimals) external onlyRole(MAINTAINER_ROLE) {
         if (_decimals > MAX_DECIMALS) revert InvalidInput(_decimals);
+        _requireQueuesEmpty();
         trimDecimals = _decimals;
         emit UpdateTrimDecimals(_decimals);
     }
@@ -626,7 +632,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
         if (answer <= 0) revert InvalidPrice(answer);
 
         // Check for stale price data
-        if (maxStalePeriod > 0 && block.timestamp - updatedAt > maxStalePeriod) {
+        if (block.timestamp - updatedAt > maxStalePeriod) {
             revert StalePriceData(updatedAt, block.timestamp, maxStalePeriod);
         }
 
@@ -1435,19 +1441,23 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
      */
     function updateEpoch() external onlyRole(OPERATOR_ROLE) {
         if (mgtFeeRate == 0) revert MgtFeeDisabled();
+        if (offchainShares == 0) revert InvalidAmount();
+        if (mgtFeeTo == address(0)) revert InvalidAddress();
+
         if (lastUpdateTS != 0 && block.timestamp < lastUpdateTS + timeBuffer) {
             revert UpdateTooEarly(block.timestamp);
         }
 
-        uint256 dailyFee = _trim(_calculateDailyMgtFee(offchainShares));
-        if (dailyFee > 0) {
-            if (mgtFeeTo == address(0)) revert InvalidAddress();
-            totalMgtFeeUnclaimed += dailyFee;
-            token.mint(mgtFeeTo, dailyFee);
+        uint256 dailyFeeShares = _calculateDailyMgtFee(offchainShares);
+        uint256 ratio = _sharesPerToken();
+        uint256 dailyFeeTokens = _trim(Math.mulDiv(dailyFeeShares, 1e18, ratio));
+        if (dailyFeeTokens > 0) {
+            totalMgtFeeUnclaimed += dailyFeeTokens;
+            token.mint(mgtFeeTo, dailyFeeTokens);
         }
 
         lastUpdateTS = block.timestamp;
-        emit UpdateEpoch(dailyFee, offchainShares);
+        emit UpdateEpoch(dailyFeeShares, dailyFeeTokens, offchainShares);
     }
 
     /**
@@ -1523,6 +1533,21 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     /*//////////////////////////////////////////////////////////////
                         INTERNAL FUNCTIONS
     //////////////////////////////////////////////////////////////*/
+
+    /**
+     * @notice Refund tokens to sender, or escrow if sender is banned
+     * @param _sender Address to refund
+     * @param _amount Amount of tokens to refund
+     */
+    /**
+     * @notice Revert if any queue (deposit, pending redeem, redeem) is non-empty
+     * @dev Guards parameter changes that would retroactively affect queued entries
+     */
+    function _requireQueuesEmpty() internal view {
+        if (depositQueue.length() != 0 || pendingRedeemQueue.length() != 0 || redeemQueue.length() != 0) {
+            revert QueuesNotEmpty();
+        }
+    }
 
     /**
      * @notice Refund tokens to sender, or escrow if sender is banned

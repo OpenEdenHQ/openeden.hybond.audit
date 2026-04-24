@@ -136,20 +136,21 @@ describe('PriceOracle', function () {
       expect((await priceOracle.pendingPrice())[3]).to.equal(false);
     });
 
-    it('should store observedAt in round data after confirmation', async function () {
+    it('should store observedAt as startedAt and block.timestamp as updatedAt after confirmation', async function () {
       const { priceOracle, operator, confirmer } = await loadFixture(deployFixture);
 
       const observedAt = await getObservationTimestamp();
       await priceOracle
         .connect(operator)
         .proposePrice(ethers.parseUnits('1.005', ORACLE_DECIMALS), observedAt);
-      await priceOracle
+      const confirmTx = await priceOracle
         .connect(confirmer)
         .confirmPrice(ethers.parseUnits('1.005', ORACLE_DECIMALS));
+      const confirmBlock = await confirmTx.getBlock();
 
       const [, , startedAt, updatedAt] = await priceOracle.latestRoundData();
       expect(startedAt).to.equal(observedAt);
-      expect(updatedAt).to.equal(observedAt);
+      expect(updatedAt).to.equal(confirmBlock!.timestamp);
     });
 
     it('should revert proposePrice with future timestamp', async function () {

@@ -269,7 +269,7 @@ contract PriceOracle is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
         round.roundId = latestRoundValue;
         round.answer = newPrice;
         round.startedAt = pendingPriceValue.observedAt;
-        round.updatedAt = pendingPriceValue.observedAt;
+        round.updatedAt = block.timestamp;
         round.answeredInRound = latestRoundValue;
 
         delete pendingPriceValue;

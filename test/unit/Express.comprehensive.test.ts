@@ -780,7 +780,13 @@ describe('Express - Comprehensive Tests', function () {
       expect(await express.totalMgtFeeUnclaimed()).to.equal(await oem.balanceOf(mgtFeeTo));
     });
     it('should revert if updating epoch too early', async function () {
-      const { express, operator, maintainer } = await loadFixture(deployFixture);
+      const { express, usdo, user1, operator, maintainer } = await loadFixture(deployFixture);
+      // Need offchainShares > 0 for updateEpoch to proceed
+      const depositAmt = ethers.parseUnits('5000', 18);
+      await express
+        .connect(user1)
+        .requestDeposit(await usdo.getAddress(), depositAmt, user1.address);
+      await express.connect(maintainer).processDepositQueue(1, depositAmt);
       await express.connect(maintainer).updateMgtFeeRate(300);
       // First update is allowed
       await express.connect(operator).updateEpoch();
@@ -1238,16 +1244,14 @@ describe('Express - Comprehensive Tests', function () {
       // Fee is charged on offchainShares — which is now smaller
       expect(fee2).to.be.lt(fee1);
     });
-    it('should accrue zero fee when circulating supply is zero', async function () {
-      const { express, oem, operator, maintainer } = await loadFixture(deployFixture);
-      // Set mgt fee
+    it('should revert updateEpoch when offchainShares is zero', async function () {
+      const { express, operator, maintainer } = await loadFixture(deployFixture);
       await express.connect(maintainer).updateMgtFeeRate(300);
-      // No deposits, so totalSupply = 0 and circulating = 0
-      const timeBuffer = await express.timeBuffer();
-      await time.increase(timeBuffer);
-      await express.connect(operator).updateEpoch();
-      expect(await express.totalMgtFeeUnclaimed()).to.equal(0);
-      expect(await oem.totalSupply()).to.equal(0);
+      // No deposits, so offchainShares = 0
+      await expect(express.connect(operator).updateEpoch()).to.be.revertedWithCustomError(
+        express,
+        'InvalidAmount'
+      );
     });
     it('should base fee on offchainShares which is reduced by pending redeems', async function () {
       const fixture = await loadFixture(deployFixture);
@@ -1449,8 +1453,8 @@ describe('Express - Comprehensive Tests', function () {
       });
       it('should trim withdrawAsset amount to 6 decimals', async function () {
         const fixture = await loadFixture(deployFixture);
-        const { express, operator, maintainer } = await setupWithdrawFixture(fixture);
-        await express.connect(maintainer).updateTrimDecimals(6);
+        await fixture.express.connect(fixture.maintainer).updateTrimDecimals(6);
+        const { express, operator } = await setupWithdrawFixture(fixture);
         await express.connect(operator).processPendingRedeems(1, LARGE_TOTAL_ASSET);
         const [, , , , withdrawAssetAmt] = await express.getRedeemQueueInfo(0);
         // Last 12 digits should be zero
@@ -1458,9 +1462,8 @@ describe('Express - Comprehensive Tests', function () {
       });
       it('should not trim withdrawAsset amount when trimDecimals is 0', async function () {
         const fixture = await loadFixture(deployFixture);
-        const { express, operator, maintainer, withdrawAmount } =
-          await setupWithdrawFixture(fixture);
-        await express.connect(maintainer).updateTrimDecimals(0);
+        await fixture.express.connect(fixture.maintainer).updateTrimDecimals(0);
+        const { express, operator, withdrawAmount } = await setupWithdrawFixture(fixture);
         await express.connect(operator).processPendingRedeems(1, LARGE_TOTAL_ASSET);
         const [, , , , withdrawAssetAmt] = await express.getRedeemQueueInfo(0);
         // With 1:1 price and no fee, should equal the full withdraw amount
