@@ -148,8 +148,9 @@ npx hardhat test test/unit/Token.test.ts
 
 **Current Architecture**: Express is fully queue-driven:
 - All operations use queued request/processing pattern
-- Deposit flow: `requestDeposit()` → enqueue → `processDepositQueue()` → mint tokens
-- Redeem flow (T+2, operator-enforced off-chain): `requestRedeem()` → `pendingRedeemQueue` → `processPendingRedeems()` → `redeemQueue` → `processRedeemQueue()` → burn tokens and transfer assets
+- Deposit flow: `requestDeposit()` → enqueue → `processDepositQueue(_len, _newShares)` → pro-rata mint tokens, increment `offchainShares`
+- Redeem flow (T+2, operator-enforced off-chain): `requestRedeem()` → deduct `offchainShares`, increment `totalRedeemQueueTokens` → `pendingRedeemQueue` → `processPendingRedeems(_len, _totalAsset)` → `redeemQueue` → `processRedeemQueue()` → burn tokens and transfer assets
+- `sharesPerToken` is invariant during deposit, redeem, burn, cancel, and revert operations. It only changes on `updateEpoch` (fee dilution) or `updateOffchainShares` (rare admin override).
 - Fee handling occurs at different phases:
   - Deposit: Fee charged at request time (in underlying asset)
   - Redeem: Fee calculated at T+2 pricing (in redeemAsset)
@@ -185,13 +186,14 @@ function processQueue(uint256 _len) {
 - Fee recipients: `treasury`, `txFeeTo`, `mgtFeeTo`
 
 ### Management Fee Accounting (`offchainShares` / `totalMgtFeeUnclaimed`)
-- **`offchainShares`**: the active BNY share value used as the numerator in `_sharesPerToken`. Set via a two-step propose+confirm flow: OPERATOR_ROLE proposes with `proposeOffchainShares`, CONFIRM_ROLE confirms with `confirmOffchainShares`. Latest proposal wins (re-propose to correct a wrong value before the confirmer echoes it).
-- **`proposedOffchainShares`**: pending value awaiting confirmation. Cleared to zero on confirm. `updateEpoch` reverts `PendingProposalExists` while this is non-zero, ensuring the epoch always bakes in a freshly confirmed value.
-- **`totalMgtFeeUnclaimed`**: currently live (unredeemed) fee tokens. Decremented when fee tokens move pending→final in `_processSinglePendingRedeem`; re-credited in `cancelRedeem` and `revertRedeemToPending` for fee-owned entries.
-- **Formula**: `sharesPerToken = offchainShares / (totalSupply - totalRedeemQueueShares)`. Falls back to `1e18` when the denominator is zero (bootstrap, or fully drained pool). The ratio drops whenever `updateEpoch` mints new HYBOND tokens to `mgtFeeTo` (inflating `totalSupply` while `offchainShares` stays unchanged), and rises on the next `confirmOffchainShares` that reflects BNY growth.
-- `mgtFeeTo` redeems via `requestRedeem`, which **overrides the caller-supplied amount to `totalMgtFeeUnclaimed`** (full live balance) to prevent provenance desync.
+- **`offchainShares`**: the active offchain fund share value used as the numerator in `_sharesPerToken`. Updated automatically: incremented by `processDepositQueue(_len, _newShares)`, decremented by `requestRedeem()`. A rare admin override `updateOffchainShares()` (MAINTAINER_ROLE) exists for share splits or reconciliation.
+- **`totalMgtFeeUnclaimed`**: currently live (unredeemed) fee tokens. Zeroed at `requestRedeem` time when `mgtFeeTo` redeems (not at process time). Re-credited in `cancelPendingRedeem` and `cancelRedeem` for fee-owned entries.
+- **Formula**: `sharesPerToken = offchainShares / (totalSupply - totalRedeemQueueTokens)`. Falls back to `1e18` when the denominator is zero (bootstrap, or fully drained pool). **The ratio is invariant during deposit and redeem operations** — it only changes when `updateEpoch` mints fee tokens (intended dilution) or when `updateOffchainShares` is called (rare admin override).
+- **Deposit flow**: `processDepositQueue(_len, _newShares)` uses two-pass pro-rata minting. `_newShares` = actual offchain shares acquired. `mintTotal = _newShares * 1e18 / sharesPerToken`. Each depositor gets `mintTotal * userNetAssets / batchTotalNetAssets`.
+- **Redeem flow**: `requestRedeem()` converts tokens to offchain shares at current ratio, deducts from `offchainShares`, increments `totalRedeemQueueTokens`. `processPendingRedeems(_len, _totalAsset)` computes redeem asset payouts via oracle and validates against `_totalAsset` sanity bound.
+- `mgtFeeTo` redeems via `requestRedeem`, which **overrides the caller-supplied amount to `totalMgtFeeUnclaimed`** and zeroes it immediately to prevent double-redeem.
 - `updateMgtFeeTo` requires `totalMgtFeeUnclaimed == 0` AND both redeem queues empty.
-- **Pre-sync fairness**: when `offchainShares == 0`, `_sharesPerToken()` returns the 1e18 fallback so deposits and redeems settle at 1:1. This is economically fair (users get the exact asset-value of their shares) and safe because `updateEpoch` is a no-op while `offchainShares == 0` (`dailyFee = 0 * rate = 0`) — no dilution can happen in the pre-sync window.
+- **Pre-sync fairness**: when `offchainShares == 0`, `_sharesPerToken()` returns the 1e18 fallback so deposits and redeems settle at 1:1. This is economically fair and safe because `updateEpoch` is a no-op while `offchainShares == 0` (`dailyFee = 0 * rate = 0`).
 
 ### mgtFeeTo Operational Invariants (enforced off-chain)
 See the comment block at `Express.sol:80` near the `mgtFeeTo` declaration for the full list. Summary:

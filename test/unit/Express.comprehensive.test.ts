@@ -343,7 +343,7 @@ describe('Express - Comprehensive Tests', function () {
         await time.increase(timeBuffer);
         await express.connect(operator).updateEpoch();
         const redeemAmount = ethers.parseUnits('1000', 18);
-        // Ratio is baked in at requestRedeem time (offchainShareAmount computed then)
+        // Ratio is baked in at requestRedeem time (shareAmount computed then)
         const ratioAtRequest = await express.sharesPerToken();
         const expectedRedeemAssetAmt = trim(
           (redeemAmount * ratioAtRequest) / ethers.parseUnits('1', 18),
@@ -354,7 +354,7 @@ describe('Express - Comprehensive Tests', function () {
         const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(withdrawDelay);
         await express.connect(operator).processPendingRedeems(1, LARGE_TOTAL_ASSET);
-        // getRedeemQueueInfo returns: (sender, receiver, tokenAmount, offchainShareAmount, redeemAssetAmt, feeAssetAmt, requestTimestamp, id)
+        // getRedeemQueueInfo returns: (sender, receiver, tokenAmount, shareAmount, redeemAssetAmt, feeAssetAmt, requestTimestamp, id)
         const [, , tokenAmount, , redeemAssetAmt] = await express.getRedeemQueueInfo(0);
         expect(tokenAmount).to.equal(redeemAmount);
         expect(redeemAssetAmt).to.equal(expectedRedeemAssetAmt);
@@ -375,7 +375,7 @@ describe('Express - Comprehensive Tests', function () {
         // Process to withdraw queue
         await express.connect(operator).processPendingRedeems(1, LARGE_TOTAL_ASSET);
         // Check withdraw queue has correct timestamp
-        // getRedeemQueueInfo: (sender, receiver, tokenAmount, offchainShareAmount, redeemAssetAmt, feeAssetAmt, requestTimestamp, id)
+        // getRedeemQueueInfo: (sender, receiver, tokenAmount, shareAmount, redeemAssetAmt, feeAssetAmt, requestTimestamp, id)
         const [, , , , , , timestamp] = await express.getRedeemQueueInfo(0);
         expect(timestamp).to.equal(requestTimestamp);
       });
@@ -415,7 +415,7 @@ describe('Express - Comprehensive Tests', function () {
         await time.increase(withdrawDelay);
         const queueLen: bigint = await express.getPendingRedeemQueueLength();
         await express.connect(operator).processPendingRedeems(queueLen, LARGE_TOTAL_ASSET);
-        // getRedeemQueueInfo: (sender, receiver, tokenAmount, offchainShareAmount, redeemAssetAmt, ...)
+        // getRedeemQueueInfo: (sender, receiver, tokenAmount, shareAmount, redeemAssetAmt, ...)
         const [, , , , redeemAssetAmt1] = await express.getRedeemQueueInfo(0);
         const [, , , , redeemAssetAmt2] = await express.getRedeemQueueInfo(1);
         expect(redeemAssetAmt1).to.equal(expectedRedeemAssetAmt1);
@@ -564,7 +564,7 @@ describe('Express - Comprehensive Tests', function () {
         // Revert all withdraws
         await express.connect(operator).revertRedeemToPending(0); // 0 = all
         // Check that timestamps are preserved in pending queue
-        // getPendingRedeemQueueInfo: (sender, receiver, tokenAmount, offchainShareAmount, requestTimestamp, id)
+        // getPendingRedeemQueueInfo: (sender, receiver, tokenAmount, shareAmount, requestTimestamp, id)
         const [, , , , timestamp1] = await express.getPendingRedeemQueueInfo(0);
         const [, , , , timestamp2] = await express.getPendingRedeemQueueInfo(1);
         const [, , , , timestamp3] = await express.getPendingRedeemQueueInfo(2);
@@ -600,10 +600,9 @@ describe('Express - Comprehensive Tests', function () {
         // Items are back in pending queue, but already past T+2 delay (timestamps preserved)
         // Should be able to process immediately
         const queueLen: bigint = await express.getPendingRedeemQueueLength();
-        await expect(express.connect(operator).processPendingRedeems(queueLen, LARGE_TOTAL_ASSET)).to.emit(
-          express,
-          'ProcessPendingRedeem'
-        );
+        await expect(
+          express.connect(operator).processPendingRedeems(queueLen, LARGE_TOTAL_ASSET)
+        ).to.emit(express, 'ProcessPendingRedeem');
         // All should be back in withdraw queue
         const withdrawQueueLength = await express.getRedeemQueueLength();
         expect(withdrawQueueLength).to.equal(3);
@@ -828,10 +827,9 @@ describe('Express - Comprehensive Tests', function () {
     });
     it('should only allow OPERATOR to process queues', async function () {
       const { express, user1 } = await loadFixture(deployFixture);
-      await expect(express.connect(user1).processPendingRedeems(1, LARGE_TOTAL_ASSET)).to.be.revertedWithCustomError(
-        express,
-        'AccessControlUnauthorizedAccount'
-      );
+      await expect(
+        express.connect(user1).processPendingRedeems(1, LARGE_TOTAL_ASSET)
+      ).to.be.revertedWithCustomError(express, 'AccessControlUnauthorizedAccount');
     });
     it('should only allow WHITELIST_ROLE to grant KYC', async function () {
       const { express, user1 } = await loadFixture(deployFixture);
@@ -850,7 +848,10 @@ describe('Express - Comprehensive Tests', function () {
   describe('Upgradeability', function () {
     it('should be upgradeable by UPGRADE_ROLE', async function () {
       const { express, admin } = await loadFixture(deployFixture);
-      const ExpressV2 = await ethers.getContractFactory('contracts/extension/Express.sol:Express', admin);
+      const ExpressV2 = await ethers.getContractFactory(
+        'contracts/extension/Express.sol:Express',
+        admin
+      );
       await expect(upgrades.upgradeProxy(await express.getAddress(), ExpressV2)).to.not.be.reverted;
     });
     it('should preserve state after upgrade', async function () {
@@ -862,7 +863,10 @@ describe('Express - Comprehensive Tests', function () {
         .requestDeposit(await usdo.getAddress(), mintAmount, user1.address);
       const queueLengthBefore = await express.getDepositQueueLength();
       // Upgrade
-      const ExpressV2 = await ethers.getContractFactory('contracts/extension/Express.sol:Express', admin);
+      const ExpressV2 = await ethers.getContractFactory(
+        'contracts/extension/Express.sol:Express',
+        admin
+      );
       const upgraded = await upgrades.upgradeProxy(await express.getAddress(), ExpressV2);
       // State should be preserved
       const queueLengthAfter = await upgraded.getDepositQueueLength();
@@ -1839,7 +1843,10 @@ describe('Express - Comprehensive Tests', function () {
         const [, , , , redeemAssetAmtAfterDeposit] = await express.getRedeemQueueInfo(0);
         // Redeem amount matches preview (within rounding tolerance from mulDiv)
         // The ratio was baked in at requestRedeem time, so deposits don't affect it
-        expect(redeemAssetAmtAfterDeposit).to.be.closeTo(previewBeforeDeposit, ethers.parseUnits('1', 12));
+        expect(redeemAssetAmtAfterDeposit).to.be.closeTo(
+          previewBeforeDeposit,
+          ethers.parseUnits('1', 12)
+        );
       });
     });
     describe('changing trimDecimals mid-operation', function () {

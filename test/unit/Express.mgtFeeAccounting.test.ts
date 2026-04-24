@@ -61,7 +61,7 @@ describe('Express - Management Fee Accounting (spreadsheet simulation)', functio
     // mgtFeeTo requestRedeem with amount 0 (overridden to totalMgtFeeUnclaimed)
     await express.connect(treasury).requestRedeem(treasury.address, 0);
 
-    // totalMgtFeeUnclaimed zeroed immediately at request time (M-1 fix)
+    // totalMgtFeeUnclaimed zeroed immediately at request time
     expect(await express.totalMgtFeeUnclaimed()).to.equal(0n);
 
     // Advance past T+2.
@@ -101,7 +101,7 @@ describe('Express - Management Fee Accounting (spreadsheet simulation)', functio
     expect(await oem.totalSupply()).to.equal(depositAmount + newFees);
   });
 
-  it('M-1 regression: mgtFeeTo cannot double-redeem', async function () {
+  it('mgtFeeTo cannot double-redeem', async function () {
     const { express, oem, usdo, maintainer, operator, treasury, user1 } =
       await loadFixture(deployExpressContracts);
 

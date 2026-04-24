@@ -49,7 +49,9 @@ describe('Express - Ratio Invariance', function () {
       const ratioBefore = await express.sharesPerToken();
 
       const depositAmt = ethers.parseUnits('3000', 18);
-      await express.connect(user2).requestDeposit(await usdo.getAddress(), depositAmt, user2.address);
+      await express
+        .connect(user2)
+        .requestDeposit(await usdo.getAddress(), depositAmt, user2.address);
       await express.connect(maintainer).processDepositQueue(1, depositAmt);
 
       const ratioAfter = await express.sharesPerToken();
@@ -64,7 +66,9 @@ describe('Express - Ratio Invariance', function () {
       expect(ratioBefore).to.be.lt(ONE); // Verify fees diluted the ratio
 
       const depositAmt = ethers.parseUnits('5000', 18);
-      await express.connect(user2).requestDeposit(await usdo.getAddress(), depositAmt, user2.address);
+      await express
+        .connect(user2)
+        .requestDeposit(await usdo.getAddress(), depositAmt, user2.address);
       // newShares should be proportional to maintain ratio
       const newShares = ethers.parseUnits('5000', 18);
       await express.connect(maintainer).processDepositQueue(1, newShares);
@@ -79,8 +83,12 @@ describe('Express - Ratio Invariance', function () {
 
       const ratioBefore = await express.sharesPerToken();
 
-      await express.connect(user1).requestDeposit(await usdo.getAddress(), ethers.parseUnits('2000', 18), user1.address);
-      await express.connect(user2).requestDeposit(await usdo.getAddress(), ethers.parseUnits('3000', 18), user2.address);
+      await express
+        .connect(user1)
+        .requestDeposit(await usdo.getAddress(), ethers.parseUnits('2000', 18), user1.address);
+      await express
+        .connect(user2)
+        .requestDeposit(await usdo.getAddress(), ethers.parseUnits('3000', 18), user2.address);
 
       const totalNewShares = ethers.parseUnits('5000', 18);
       await express.connect(maintainer).processDepositQueue(2, totalNewShares);
@@ -123,19 +131,19 @@ describe('Express - Ratio Invariance', function () {
       await express.connect(maintainer).processDepositQueue(1, deposit2);
 
       // Now set offchainShares to a small value that can't cover a large redeem
-      // offchainShareAmount = tokenAmount * offchainShares / denom
+      // shareAmount = tokenAmount * offchainShares / denom
       // If offchainShares = 100 and user redeems 10000 tokens from denom of 15000:
-      // offchainShareAmount = 10000 * 100 / 15000 = 66.67, which is less than 100
-      // We need offchainShareAmount > offchainShares. This happens when tokenAmount > denom.
+      // shareAmount = 10000 * 100 / 15000 = 66.67, which is less than 100
+      // We need shareAmount > offchainShares. This happens when tokenAmount > denom.
       // That's impossible for a single user.
 
       // Alternative: set offchainShares to 0 via admin override, then any redeem should revert
-      // because offchainShareAmount > 0 but offchainShares == 0
+      // because shareAmount > 0 but offchainShares == 0
       await express.connect(maintainer).updateOffchainShares(0);
 
       // With offchainShares == 0, ratio fallback is 1e18
-      // offchainShareAmount = tokenAmount * 1e18 / 1e18 = tokenAmount
-      // offchainShares (0) < offchainShareAmount (tokenAmount > 0) => revert
+      // shareAmount = tokenAmount * 1e18 / 1e18 = tokenAmount
+      // offchainShares (0) < shareAmount (tokenAmount > 0) => revert
       await expect(
         express.connect(user1).requestRedeem(user1.address, ethers.parseUnits('1000', 18))
       ).to.be.revertedWithCustomError(express, 'InsufficientOffchainShares');
@@ -202,6 +210,21 @@ describe('Express - Ratio Invariance', function () {
       await express.connect(maintainer).cancelRedeem(1);
 
       expect(await express.sharesPerToken()).to.equal(ratioBefore);
+    });
+  });
+
+  describe('InsufficientSettlementFunds revert', function () {
+    it('reverts when oracle-derived total exceeds _totalAsset', async function () {
+      const fixture = await loadFixture(deployWithDeposit);
+      const { express, user1, operator } = fixture;
+
+      await express.connect(user1).requestRedeem(user1.address, ethers.parseUnits('1000', 18));
+      await time.increase(2 * 24 * 60 * 60 + 1);
+
+      // Supply a tiny _totalAsset that the oracle-derived payout will exceed
+      await expect(
+        express.connect(operator).processPendingRedeems(1, 1n)
+      ).to.be.revertedWithCustomError(express, 'InsufficientSettlementFunds');
     });
   });
 

@@ -49,7 +49,9 @@ describe('Express - Offchain Shares', function () {
     it('increments offchainShares by _newShares', async function () {
       const { express, usdo, user1, maintainer } = await loadFixture(deployFixture);
       const depositAmt = ethers.parseUnits('5000', 18);
-      await express.connect(user1).requestDeposit(await usdo.getAddress(), depositAmt, user1.address);
+      await express
+        .connect(user1)
+        .requestDeposit(await usdo.getAddress(), depositAmt, user1.address);
 
       const sharesBefore = await express.offchainShares();
       const newShares = ethers.parseUnits('5000', 18);
@@ -61,7 +63,9 @@ describe('Express - Offchain Shares', function () {
     it('reverts if _newShares is 0 when _len > 0', async function () {
       const { express, usdo, user1, maintainer } = await loadFixture(deployFixture);
       const depositAmt = ethers.parseUnits('5000', 18);
-      await express.connect(user1).requestDeposit(await usdo.getAddress(), depositAmt, user1.address);
+      await express
+        .connect(user1)
+        .requestDeposit(await usdo.getAddress(), depositAmt, user1.address);
 
       await expect(
         express.connect(maintainer).processDepositQueue(1, 0)
@@ -87,7 +91,9 @@ describe('Express - Offchain Shares', function () {
       const depositAmt = ethers.parseUnits('2000', 18);
 
       // Fee is 0 by default, so net = deposit amount
-      await express.connect(user1).requestDeposit(await usdo.getAddress(), depositAmt, user1.address);
+      await express
+        .connect(user1)
+        .requestDeposit(await usdo.getAddress(), depositAmt, user1.address);
       await express.connect(maintainer).processDepositQueue(1, depositAmt);
 
       // At 1e18 fallback ratio: mintTotal = newShares * 1e18 / 1e18 = newShares = depositAmt
@@ -123,7 +129,9 @@ describe('Express - Offchain Shares', function () {
 
       // Bootstrap so totalSupply > 0 but offchainShares == 0 (process without newShares via updateOffchainShares to zero)
       const depositAmt = ethers.parseUnits('2000', 18);
-      await express.connect(user1).requestDeposit(await usdo.getAddress(), depositAmt, user1.address);
+      await express
+        .connect(user1)
+        .requestDeposit(await usdo.getAddress(), depositAmt, user1.address);
       await express.connect(maintainer).processDepositQueue(1, depositAmt);
       // Reset offchainShares to 0 to test fallback
       await express.connect(maintainer).updateOffchainShares(0);
