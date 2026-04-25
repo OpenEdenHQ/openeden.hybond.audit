@@ -56,6 +56,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     uint256 private constant BPS_BASE = 1e4;
     uint256 private constant DAYS_IN_YEAR = 365;
     uint256 private constant MAX_DECIMALS = 18;
+    uint256 private constant DEFAULT_MAX_STALE_PERIOD = 1 days;
 
     /*//////////////////////////////////////////////////////////////
                             STATE VARIABLES
@@ -363,6 +364,9 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
         mgtFeeTo = _mgtFeeTo;
         assetRegistry = IAssetRegistry(_assetRegistry);
         priceOracle = IPriceFeed(_priceOracle);
+        if (_priceOracle != address(0)) {
+            maxStalePeriod = DEFAULT_MAX_STALE_PERIOD;
+        }
 
         __DepositRedeemLimiter_init(cfg.depositMinimum, cfg.redeemMinimum, cfg.firstDepositAmount);
 
@@ -389,6 +393,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
      */
     function updatePriceOracle(address _address) external onlyRole(MAINTAINER_ROLE) {
         if (_address == address(0)) revert InvalidAddress();
+        if (maxStalePeriod == 0) revert InvalidInput(maxStalePeriod);
         _requireQueuesEmpty();
         priceOracle = IPriceFeed(_address);
         emit UpdatePriceOracle(_address);
@@ -399,6 +404,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
      * @param _maxStalePeriod Maximum staleness in seconds (e.g., 86400 for 24 hours)
      */
     function updateMaxStalePeriod(uint256 _maxStalePeriod) external onlyRole(MAINTAINER_ROLE) {
+        if (address(priceOracle) != address(0) && _maxStalePeriod == 0) revert InvalidInput(_maxStalePeriod);
         _requireQueuesEmpty();
         maxStalePeriod = _maxStalePeriod;
         emit UpdateMaxStalePeriod(_maxStalePeriod);
@@ -450,6 +456,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
      */
     function updateMgtFeeTo(address _address) external onlyRole(MAINTAINER_ROLE) {
         if (_address == address(0)) revert InvalidAddress();
+        if (totalMgtFeeUnclaimed != 0) revert InvalidAmount();
         _requireQueuesEmpty();
         mgtFeeTo = _address;
         emit UpdateMgtFeeTo(_address);

@@ -9,6 +9,14 @@ describe('Express - Offchain Shares', function () {
   }
 
   async function deployAndAttachPriceOracle(express: any, maintainer: any, admin: any) {
+    const priceOracle = await deployPriceOracle(admin);
+
+    await express.connect(maintainer).updateMaxStalePeriod(365 * 24 * 60 * 60);
+    await express.connect(maintainer).updatePriceOracle(await priceOracle.getAddress());
+    return priceOracle;
+  }
+
+  async function deployPriceOracle(admin: any) {
     const latestBlock = await ethers.provider.getBlock('latest');
     const observedAt = BigInt(latestBlock!.timestamp - 1);
 
@@ -24,9 +32,6 @@ describe('Express - Offchain Shares', function () {
       }
     );
     await priceOracle.waitForDeployment();
-
-    await express.connect(maintainer).updateMaxStalePeriod(365 * 24 * 60 * 60);
-    await express.connect(maintainer).updatePriceOracle(await priceOracle.getAddress());
     return priceOracle;
   }
 
@@ -64,6 +69,57 @@ describe('Express - Offchain Shares', function () {
       const { express, maintainer } = await loadFixture(deployWithBootstrapFixture);
       await express.connect(maintainer).updateOffchainShares(0);
       expect(await express.offchainShares()).to.equal(0n);
+    });
+  });
+
+  describe('price oracle stale period', function () {
+    it('initializes a non-zero stale period when constructed with a price oracle', async function () {
+      const { oem, usdo, assetRegistry, admin, treasury, feeTo } = await loadFixture(deployFixture);
+      const priceOracle = await deployPriceOracle(admin);
+      const ExpressFactory = await ethers.getContractFactory(
+        'contracts/extension/Express.sol:Express'
+      );
+
+      const express = await upgrades.deployProxy(
+        ExpressFactory,
+        [
+          await oem.getAddress(),
+          await usdo.getAddress(),
+          treasury.address,
+          feeTo.address,
+          treasury.address,
+          admin.address,
+          await assetRegistry.getAddress(),
+          await priceOracle.getAddress(),
+          {
+            depositMinimum: ethers.parseUnits('100', 18),
+            redeemMinimum: ethers.parseUnits('50', 18),
+            firstDepositAmount: ethers.parseUnits('1000', 18),
+          },
+        ],
+        { kind: 'uups', initializer: 'initialize' }
+      );
+
+      expect(await express.maxStalePeriod()).to.be.gt(0n);
+      expect(await express.getPrice()).to.equal(ethers.parseUnits('2', 18));
+    });
+
+    it('reverts when attaching a price oracle while maxStalePeriod is zero', async function () {
+      const { express, maintainer, admin } = await loadFixture(deployFixture);
+      const priceOracle = await deployPriceOracle(admin);
+
+      await expect(
+        express.connect(maintainer).updatePriceOracle(await priceOracle.getAddress())
+      ).to.be.revertedWithCustomError(express, 'InvalidInput');
+    });
+
+    it('reverts when setting maxStalePeriod to zero while a price oracle is configured', async function () {
+      const { express, maintainer, admin } = await loadFixture(deployFixture);
+      await deployAndAttachPriceOracle(express, maintainer, admin);
+
+      await expect(
+        express.connect(maintainer).updateMaxStalePeriod(0)
+      ).to.be.revertedWithCustomError(express, 'InvalidInput');
     });
   });
 
@@ -106,7 +162,9 @@ describe('Express - Offchain Shares', function () {
       await deployAndAttachPriceOracle(express, maintainer, admin);
 
       const depositAmt = ethers.parseUnits('5000', 18);
-      await express.connect(user1).requestDeposit(await usdo.getAddress(), depositAmt, user1.address);
+      await express
+        .connect(user1)
+        .requestDeposit(await usdo.getAddress(), depositAmt, user1.address);
 
       const expectedMinShares = ethers.parseUnits('2500', 18);
       await expect(express.connect(maintainer).processDepositQueue(1, expectedMinShares - 1n))
@@ -119,7 +177,9 @@ describe('Express - Offchain Shares', function () {
       await deployAndAttachPriceOracle(express, maintainer, admin);
 
       const depositAmt = ethers.parseUnits('5000', 18);
-      await express.connect(user1).requestDeposit(await usdo.getAddress(), depositAmt, user1.address);
+      await express
+        .connect(user1)
+        .requestDeposit(await usdo.getAddress(), depositAmt, user1.address);
 
       const expectedMinShares = ethers.parseUnits('2500', 18);
       await expect(express.connect(maintainer).processDepositQueue(1, expectedMinShares)).to.not.be

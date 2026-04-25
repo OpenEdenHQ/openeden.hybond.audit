@@ -162,4 +162,26 @@ describe('Express - Management Fee Accounting (spreadsheet simulation)', functio
     await express.connect(maintainer).cancelPendingRedeem(1);
     expect(await express.totalMgtFeeUnclaimed()).to.equal(totalFees);
   });
+
+  it('blocks mgtFeeTo rotation while live management fees are unclaimed', async function () {
+    const { express, usdo, maintainer, operator, user1, user2 } =
+      await loadFixture(deployExpressContracts);
+
+    await express.connect(maintainer).updateMgtFeeRate(1000);
+    const depositAmount = 100000n * ONE;
+
+    await express
+      .connect(user1)
+      .requestDeposit(await usdo.getAddress(), depositAmount, user1.address);
+    await express.connect(maintainer).processDepositQueue(1, depositAmount);
+
+    const timeBuffer = await express.timeBuffer();
+    await time.increase(timeBuffer);
+    await express.connect(operator).updateEpoch();
+
+    expect(await express.totalMgtFeeUnclaimed()).to.be.gt(0n);
+    await expect(
+      express.connect(maintainer).updateMgtFeeTo(user2.address)
+    ).to.be.revertedWithCustomError(express, 'InvalidAmount');
+  });
 });
