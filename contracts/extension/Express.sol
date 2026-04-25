@@ -660,8 +660,9 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     /**
      * @notice Process queued deposit requests with pro-rata minting
      * @dev Two-pass algorithm: first pass peeks entries to sum normalized net assets and validate KYC,
-     *      then computes total mint from operator-supplied _newShares. Second pass pops and mints pro-rata.
-     *      This preserves the sharesPerToken ratio exactly (see design spec for invariance proof).
+     *      then sanity-checks operator-supplied _newShares against the oracle and computes total mint.
+     *      Second pass pops and mints pro-rata. This preserves the sharesPerToken ratio exactly
+     *      (see design spec for invariance proof).
      * @param _len Number of requests to process (0 = process all)
      * @param _newShares Actual offchain fund shares acquired for this batch (must be >0 when _len >0)
      */
@@ -693,6 +694,9 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
                 ++i;
             }
         }
+
+        uint256 oracleMinShares = Math.mulDiv(batchTotalNetAssets, 1e18, getPrice());
+        if (oracleMinShares > _newShares) revert InsufficientSettlementFunds(oracleMinShares, _newShares);
 
         // Compute total tokens to mint (preserves ratio exactly)
         uint256 mintTotal = Math.mulDiv(_newShares, 1e18, currentRatio);

@@ -1,11 +1,33 @@
 import { expect } from 'chai';
-import { ethers } from 'hardhat';
+import { ethers, upgrades } from 'hardhat';
 import { loadFixture } from '@nomicfoundation/hardhat-network-helpers';
 import { deployExpressContracts } from '../fixtures/expressDeployments';
 
 describe('Express - Offchain Shares', function () {
   async function deployFixture() {
     return deployExpressContracts();
+  }
+
+  async function deployAndAttachPriceOracle(express: any, maintainer: any, admin: any) {
+    const latestBlock = await ethers.provider.getBlock('latest');
+    const observedAt = BigInt(latestBlock!.timestamp - 1);
+
+    const PriceOracleFactory = await ethers.getContractFactory('PriceOracle');
+    const priceOracle = await upgrades.deployProxy(
+      PriceOracleFactory,
+      [100, 100, ethers.parseUnits('2', 18), ethers.parseUnits('2', 18), admin.address, observedAt],
+      {
+        kind: 'uups',
+        initializer: 'initialize',
+        constructorArgs: [18],
+        unsafeAllow: ['state-variable-immutable'],
+      }
+    );
+    await priceOracle.waitForDeployment();
+
+    await express.connect(maintainer).updateMaxStalePeriod(365 * 24 * 60 * 60);
+    await express.connect(maintainer).updatePriceOracle(await priceOracle.getAddress());
+    return priceOracle;
   }
 
   // Bootstrap: deposit and process so offchainShares > 0
@@ -77,6 +99,33 @@ describe('Express - Offchain Shares', function () {
       await expect(
         express.connect(maintainer).processDepositQueue(0, ethers.parseUnits('100', 18))
       ).to.be.revertedWithCustomError(express, 'EmptyQueue');
+    });
+
+    it('reverts if oracle-implied shares exceed _newShares', async function () {
+      const { express, usdo, user1, maintainer, admin } = await loadFixture(deployFixture);
+      await deployAndAttachPriceOracle(express, maintainer, admin);
+
+      const depositAmt = ethers.parseUnits('5000', 18);
+      await express.connect(user1).requestDeposit(await usdo.getAddress(), depositAmt, user1.address);
+
+      const expectedMinShares = ethers.parseUnits('2500', 18);
+      await expect(express.connect(maintainer).processDepositQueue(1, expectedMinShares - 1n))
+        .to.be.revertedWithCustomError(express, 'InsufficientSettlementFunds')
+        .withArgs(expectedMinShares, expectedMinShares - 1n);
+    });
+
+    it('allows processing when _newShares equals the oracle-implied minimum', async function () {
+      const { express, usdo, oem, user1, maintainer, admin } = await loadFixture(deployFixture);
+      await deployAndAttachPriceOracle(express, maintainer, admin);
+
+      const depositAmt = ethers.parseUnits('5000', 18);
+      await express.connect(user1).requestDeposit(await usdo.getAddress(), depositAmt, user1.address);
+
+      const expectedMinShares = ethers.parseUnits('2500', 18);
+      await expect(express.connect(maintainer).processDepositQueue(1, expectedMinShares)).to.not.be
+        .reverted;
+      expect(await express.offchainShares()).to.equal(expectedMinShares);
+      expect(await oem.balanceOf(user1.address)).to.equal(expectedMinShares);
     });
   });
 
