@@ -79,6 +79,7 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
     18
   );
   const priceOracle = getConfigValue<string>(expressConfig, 'priceOracle');
+  const maxStalePeriod = getConfigValue<number>(expressConfig, 'maxStalePeriod');
 
   // Deploy Express
   console.log('\n1️⃣ Deploying Express...');
@@ -94,6 +95,7 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
       admin,
       assetRegistryAddress,
       priceOracle,
+      maxStalePeriod,
       {
         depositMinimum,
         redeemMinimum,
@@ -175,6 +177,8 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   console.log('Deposit Minimum:', ethers.formatEther(depositMinimum), 'HYBOND');
   console.log('Redeem Minimum:', ethers.formatEther(redeemMinimum), 'HYBOND');
   console.log('First Deposit Amount:', ethers.formatEther(firstDepositAmount), 'HYBOND');
+  console.log('Price Oracle:', priceOracle);
+  console.log('Max Stale Period:', maxStalePeriod, 'seconds');
   console.log('Admin:', admin);
 
   // Verify on Etherscan

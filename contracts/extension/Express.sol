@@ -56,7 +56,6 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     uint256 private constant BPS_BASE = 1e4;
     uint256 private constant DAYS_IN_YEAR = 365;
     uint256 private constant MAX_DECIMALS = 18;
-    uint256 private constant DEFAULT_MAX_STALE_PERIOD = 1 days;
 
     /*//////////////////////////////////////////////////////////////
                             STATE VARIABLES
@@ -332,6 +331,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
      * @param admin Address with admin privileges
      * @param _assetRegistry Address of the asset registry
      * @param _priceOracle Address of the price oracle (can be zero address if not using oracle)
+     * @param _maxStalePeriod Maximum staleness in seconds (e.g., 86400 for 24 hours)
      * @param cfg Deposit and redeem limiter configuration
      */
     function initialize(
@@ -343,6 +343,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
         address admin,
         address _assetRegistry,
         address _priceOracle,
+        uint256 _maxStalePeriod,
         DepositRedeemLimiterCfg memory cfg
     ) external initializer {
         if (
@@ -352,7 +353,8 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
             _treasury == address(0) ||
             _txFeeTo == address(0) ||
             _mgtFeeTo == address(0) ||
-            _assetRegistry == address(0)
+            _assetRegistry == address(0) ||
+            _priceOracle == address(0)
         ) revert InvalidAddress();
 
         __AccessControlEnumerable_init();
@@ -364,9 +366,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
         mgtFeeTo = _mgtFeeTo;
         assetRegistry = IAssetRegistry(_assetRegistry);
         priceOracle = IPriceFeed(_priceOracle);
-        if (_priceOracle != address(0)) {
-            maxStalePeriod = DEFAULT_MAX_STALE_PERIOD;
-        }
+        maxStalePeriod = _maxStalePeriod;
 
         __DepositRedeemLimiter_init(cfg.depositMinimum, cfg.redeemMinimum, cfg.firstDepositAmount);
 
@@ -393,7 +393,6 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
      */
     function updatePriceOracle(address _address) external onlyRole(MAINTAINER_ROLE) {
         if (_address == address(0)) revert InvalidAddress();
-        if (maxStalePeriod == 0) revert InvalidInput(maxStalePeriod);
         _requireQueuesEmpty();
         priceOracle = IPriceFeed(_address);
         emit UpdatePriceOracle(_address);
@@ -404,7 +403,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
      * @param _maxStalePeriod Maximum staleness in seconds (e.g., 86400 for 24 hours)
      */
     function updateMaxStalePeriod(uint256 _maxStalePeriod) external onlyRole(MAINTAINER_ROLE) {
-        if (address(priceOracle) != address(0) && _maxStalePeriod == 0) revert InvalidInput(_maxStalePeriod);
+        if (_maxStalePeriod == 0) revert InvalidInput(_maxStalePeriod);
         _requireQueuesEmpty();
         maxStalePeriod = _maxStalePeriod;
         emit UpdateMaxStalePeriod(_maxStalePeriod);
@@ -629,9 +628,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
      */
     function getPrice() public view returns (uint256 price) {
         // If price oracle not set, return 1:1 ratio (1e18)
-        if (address(priceOracle) == address(0)) {
-            return 1e18;
-        }
+        if (address(priceOracle) == address(0)) return 1e18;
 
         (uint80 roundId, int256 answer, , uint256 updatedAt, uint80 answeredInRound) = priceOracle.latestRoundData();
 
@@ -639,9 +636,8 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
         if (answer <= 0) revert InvalidPrice(answer);
 
         // Check for stale price data
-        if (block.timestamp - updatedAt > maxStalePeriod) {
+        if (block.timestamp - updatedAt > maxStalePeriod)
             revert StalePriceData(updatedAt, block.timestamp, maxStalePeriod);
-        }
 
         // Check for incomplete round data
         if (answeredInRound < roundId) {
@@ -999,8 +995,8 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
                 address sender,
                 address receiver,
                 uint256 tokenAmount,
-                uint256 shareAmount, // requestTimestamp
-                ,
+                uint256 shareAmount,
+                , // requestTimestamp
                 bytes32 id
             ) = _decodePendingRedeemData(data);
 
@@ -1046,11 +1042,11 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
             (
                 address sender,
                 address receiver,
-                uint256 tokenAmount, // shareAmount
-                ,
+                uint256 tokenAmount,
+                , // shareAmount
                 uint256 redeemAssetAmt,
-                uint256 feeAssetAmt, // requestTimestamp
-                ,
+                uint256 feeAssetAmt,
+                , // requestTimestamp
                 bytes32 id
             ) = _decodeRedeemData(data);
 
@@ -1100,12 +1096,10 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
                 address sender,
                 address receiver,
                 uint256 tokenAmount,
-                uint256 shareAmount, // redeemAssetAmt
-                ,
-                ,
-                ,
-                // feeAssetAmt
-                // requestTimestamp
+                uint256 shareAmount,
+                , // redeemAssetAmt
+                , // feeAssetAmt
+                , // requestTimestamp
                 bytes32 id
             ) = _decodeRedeemData(data);
 
@@ -1186,10 +1180,9 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
                 address sender,
                 address receiver,
                 uint256 tokenAmount,
-                uint256 shareAmount, // redeemAssetAmt
-                ,
-                ,
-                // feeAssetAmt
+                uint256 shareAmount,
+                , // redeemAssetAmt
+                , // feeAssetAmt
                 uint256 requestTimestamp,
                 bytes32 oldId
             ) = _decodeRedeemData(data);

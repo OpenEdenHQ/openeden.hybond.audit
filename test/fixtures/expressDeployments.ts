@@ -6,6 +6,7 @@ export interface ExpressDeployment {
   usdo: any;
   express: any;
   assetRegistry: any;
+  priceOracle: any;
   admin: HardhatEthersSigner;
   operator: HardhatEthersSigner;
   maintainer: HardhatEthersSigner;
@@ -17,6 +18,8 @@ export interface ExpressDeployment {
   user2: HardhatEthersSigner;
   user3: HardhatEthersSigner;
 }
+
+export const DEFAULT_MAX_STALE_PERIOD = 365 * 24 * 60 * 60; // 365 days — long enough for time-skipping tests
 
 export async function deployExpressContracts(): Promise<ExpressDeployment> {
   const [admin, operator, maintainer, whitelister, pauser, treasury, feeTo, user1, user2, user3] =
@@ -52,6 +55,22 @@ export async function deployExpressContracts(): Promise<ExpressDeployment> {
     maxStalePeriod: 0,
   });
 
+  // Deploy PriceOracle (price = 1e18 → 1:1 ratio so existing tests behave as before)
+  const latestBlock = await ethers.provider.getBlock('latest');
+  const observedAt = BigInt(latestBlock!.timestamp - 1);
+  const PriceOracleFactory = await ethers.getContractFactory('PriceOracle');
+  const priceOracle = await upgrades.deployProxy(
+    PriceOracleFactory,
+    [100, 100, ethers.parseUnits('1', 18), ethers.parseUnits('1', 18), admin.address, observedAt],
+    {
+      kind: 'uups',
+      initializer: 'initialize',
+      constructorArgs: [18],
+      unsafeAllow: ['state-variable-immutable'],
+    }
+  );
+  await priceOracle.waitForDeployment();
+
   // Deploy Express
   const ExpressFactory = await ethers.getContractFactory('contracts/extension/Express.sol:Express');
   const express = await upgrades.deployProxy(
@@ -64,7 +83,8 @@ export async function deployExpressContracts(): Promise<ExpressDeployment> {
       treasury.address, // mgtFeeTo (using treasury for simplicity)
       admin.address,
       await assetRegistry.getAddress(),
-      ethers.ZeroAddress, // priceOracle (not used for testing, 1:1 ratio)
+      await priceOracle.getAddress(),
+      DEFAULT_MAX_STALE_PERIOD,
       {
         depositMinimum: ethers.parseUnits('100', 18), // 100 OEM minimum
         redeemMinimum: ethers.parseUnits('50', 18), // 50 OEM minimum
@@ -120,6 +140,7 @@ export async function deployExpressContracts(): Promise<ExpressDeployment> {
     usdo,
     express,
     assetRegistry,
+    priceOracle,
     admin,
     operator,
     maintainer,

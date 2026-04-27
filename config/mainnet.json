@@ -32,6 +32,7 @@
     "depositMinimum": "1",
     "redeemMinimum": "1",
     "firstDepositAmount": "2",
-    "priceOracle": "0x0000000000000000000000000000000000000000"
+    "priceOracle": "0x0000000000000000000000000000000000000000",
+    "maxStalePeriod": 86400
   }
 }

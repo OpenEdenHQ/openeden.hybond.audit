@@ -73,13 +73,14 @@ describe('Express - Offchain Shares', function () {
   });
 
   describe('price oracle stale period', function () {
-    it('initializes a non-zero stale period when constructed with a price oracle', async function () {
+    it('stores the maxStalePeriod passed at initialization', async function () {
       const { oem, usdo, assetRegistry, admin, treasury, feeTo } = await loadFixture(deployFixture);
       const priceOracle = await deployPriceOracle(admin);
       const ExpressFactory = await ethers.getContractFactory(
         'contracts/extension/Express.sol:Express'
       );
 
+      const customStalePeriod = 12 * 60 * 60; // 12 hours
       const express = await upgrades.deployProxy(
         ExpressFactory,
         [
@@ -91,6 +92,7 @@ describe('Express - Offchain Shares', function () {
           admin.address,
           await assetRegistry.getAddress(),
           await priceOracle.getAddress(),
+          customStalePeriod,
           {
             depositMinimum: ethers.parseUnits('100', 18),
             redeemMinimum: ethers.parseUnits('50', 18),
@@ -100,22 +102,42 @@ describe('Express - Offchain Shares', function () {
         { kind: 'uups', initializer: 'initialize' }
       );
 
-      expect(await express.maxStalePeriod()).to.be.gt(0n);
+      expect(await express.maxStalePeriod()).to.equal(BigInt(customStalePeriod));
       expect(await express.getPrice()).to.equal(ethers.parseUnits('2', 18));
     });
 
-    it('reverts when attaching a price oracle while maxStalePeriod is zero', async function () {
-      const { express, maintainer, admin } = await loadFixture(deployFixture);
-      const priceOracle = await deployPriceOracle(admin);
+    it('reverts when initialized with a zero priceOracle', async function () {
+      const { oem, usdo, assetRegistry, admin, treasury, feeTo } = await loadFixture(deployFixture);
+      const ExpressFactory = await ethers.getContractFactory(
+        'contracts/extension/Express.sol:Express'
+      );
 
       await expect(
-        express.connect(maintainer).updatePriceOracle(await priceOracle.getAddress())
-      ).to.be.revertedWithCustomError(express, 'InvalidInput');
+        upgrades.deployProxy(
+          ExpressFactory,
+          [
+            await oem.getAddress(),
+            await usdo.getAddress(),
+            treasury.address,
+            feeTo.address,
+            treasury.address,
+            admin.address,
+            await assetRegistry.getAddress(),
+            ethers.ZeroAddress,
+            12 * 60 * 60,
+            {
+              depositMinimum: ethers.parseUnits('100', 18),
+              redeemMinimum: ethers.parseUnits('50', 18),
+              firstDepositAmount: ethers.parseUnits('1000', 18),
+            },
+          ],
+          { kind: 'uups', initializer: 'initialize' }
+        )
+      ).to.be.revertedWithCustomError(ExpressFactory, 'InvalidAddress');
     });
 
-    it('reverts when setting maxStalePeriod to zero while a price oracle is configured', async function () {
-      const { express, maintainer, admin } = await loadFixture(deployFixture);
-      await deployAndAttachPriceOracle(express, maintainer, admin);
+    it('reverts when setting maxStalePeriod to zero', async function () {
+      const { express, maintainer } = await loadFixture(deployFixture);
 
       await expect(
         express.connect(maintainer).updateMaxStalePeriod(0)

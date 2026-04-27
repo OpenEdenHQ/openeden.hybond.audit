@@ -1278,6 +1278,47 @@ describe('Express - Comprehensive Tests', function () {
       expect(feeMintedToday).to.equal(expectedFee);
       expect(await express.totalMgtFeeUnclaimed()).to.equal(expectedFee);
     });
+
+    // WP-M8: dailyFee is computed in offchain-share units, then converted to token
+    // units via _sharesPerToken before minting. When the ratio != 1e18, the minted
+    // tokens differ from the share-denominated fee.
+    it('mints daily fee in token units (shares converted via sharesPerToken)', async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { express, oem, user1, usdo, maintainer, operator } = fixture;
+
+      const amount = ethers.parseUnits('100000', 18);
+      await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
+      await express.connect(maintainer).processDepositQueue(1, amount);
+
+      // Force ratio = 2e18 (offchainShares == 2 * circulating tokens) via the admin
+      // override. Now dailyFeeShares ≠ dailyFeeTokens.
+      const inflatedShares = amount * 2n;
+      await express.connect(maintainer).updateOffchainShares(inflatedShares);
+      expect(await express.sharesPerToken()).to.equal(ethers.parseUnits('2', 18));
+
+      await express.connect(maintainer).updateMgtFeeRate(300);
+      const timeBuffer = await express.timeBuffer();
+      await time.increase(timeBuffer);
+
+      const mgtFeeTo = await express.mgtFeeTo();
+      const balanceBefore = await oem.balanceOf(mgtFeeTo);
+
+      const expectedFeeShares = (inflatedShares * 300n) / (365n * 10000n);
+      // tokens = shares * 1e18 / ratio = shares / 2, then trim
+      const expectedFeeTokens = trim(
+        (expectedFeeShares * ethers.parseUnits('1', 18)) / ethers.parseUnits('2', 18),
+        TRIM_DECIMALS
+      );
+
+      await expect(express.connect(operator).updateEpoch())
+        .to.emit(express, 'UpdateEpoch')
+        .withArgs(expectedFeeShares, expectedFeeTokens, inflatedShares);
+
+      const minted = (await oem.balanceOf(mgtFeeTo)) - balanceBefore;
+      expect(minted).to.equal(expectedFeeTokens);
+      // Sanity: fee tokens are roughly half the fee shares at ratio 2:1
+      expect(expectedFeeTokens).to.be.lt(expectedFeeShares);
+    });
   });
   describe('Edge Cases', function () {
     it('should handle empty queue processing gracefully', async function () {
@@ -1871,6 +1912,68 @@ describe('Express - Comprehensive Tests', function () {
         const balance2 = await oem.balanceOf(user2.address);
         expect(balance2 % 10n ** 12n).to.equal(0); // trimmed to 6 decimals
       });
+    });
+  });
+
+  // WP-M7: queue-empty guards block fee/oracle/trim parameter changes that would
+  // retroactively reprice queued requests.
+  describe('WP-M7 — queue-empty guards on parameter changes', function () {
+    async function makeDepositQueueNonEmpty(express: any, usdo: any, user1: any) {
+      const firstDepositMin = await express.firstDepositAmount();
+      await express
+        .connect(user1)
+        .requestDeposit(await usdo.getAddress(), firstDepositMin, user1.address);
+      expect(await express.getDepositQueueLength()).to.be.gt(0);
+    }
+
+    it('updateDepositFeeRate reverts when a queue is non-empty', async function () {
+      const { express, usdo, user1, maintainer } = await loadFixture(deployFixture);
+      await makeDepositQueueNonEmpty(express, usdo, user1);
+      await expect(
+        express.connect(maintainer).updateDepositFeeRate(50)
+      ).to.be.revertedWithCustomError(express, 'QueuesNotEmpty');
+    });
+
+    it('updateRedeemFeeRate reverts when a queue is non-empty', async function () {
+      const { express, usdo, user1, maintainer } = await loadFixture(deployFixture);
+      await makeDepositQueueNonEmpty(express, usdo, user1);
+      await expect(
+        express.connect(maintainer).updateRedeemFeeRate(50)
+      ).to.be.revertedWithCustomError(express, 'QueuesNotEmpty');
+    });
+
+    it('updateTrimDecimals reverts when a queue is non-empty', async function () {
+      const { express, usdo, user1, maintainer } = await loadFixture(deployFixture);
+      await makeDepositQueueNonEmpty(express, usdo, user1);
+      await expect(express.connect(maintainer).updateTrimDecimals(6)).to.be.revertedWithCustomError(
+        express,
+        'QueuesNotEmpty'
+      );
+    });
+
+    it('updateMaxStalePeriod reverts when a queue is non-empty', async function () {
+      const { express, usdo, user1, maintainer } = await loadFixture(deployFixture);
+      await makeDepositQueueNonEmpty(express, usdo, user1);
+      await expect(
+        express.connect(maintainer).updateMaxStalePeriod(60 * 60)
+      ).to.be.revertedWithCustomError(express, 'QueuesNotEmpty');
+    });
+
+    it('updatePriceOracle reverts when a queue is non-empty', async function () {
+      const { express, usdo, user1, maintainer, priceOracle } = await loadFixture(deployFixture);
+      await makeDepositQueueNonEmpty(express, usdo, user1);
+      await expect(
+        express.connect(maintainer).updatePriceOracle(await priceOracle.getAddress())
+      ).to.be.revertedWithCustomError(express, 'QueuesNotEmpty');
+    });
+
+    it('updateMgtFeeTo reverts when a queue is non-empty (queue check before fee check)', async function () {
+      const { express, usdo, user1, user2, maintainer } = await loadFixture(deployFixture);
+      await makeDepositQueueNonEmpty(express, usdo, user1);
+      // totalMgtFeeUnclaimed == 0 here, so the queue guard is what trips
+      await expect(
+        express.connect(maintainer).updateMgtFeeTo(user2.address)
+      ).to.be.revertedWithCustomError(express, 'QueuesNotEmpty');
     });
   });
 });
