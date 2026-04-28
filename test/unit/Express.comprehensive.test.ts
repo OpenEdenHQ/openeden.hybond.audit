@@ -1,7 +1,7 @@
 import { expect } from 'chai';
 import { ethers, upgrades } from 'hardhat';
 import { loadFixture, time } from '@nomicfoundation/hardhat-network-helpers';
-import { deployExpressContracts } from '../fixtures/expressDeployments';
+import { deployExpressContracts, DEFAULT_MAX_STALE_PERIOD } from '../fixtures/expressDeployments';
 // Mirror the contract's _trim: truncate 18-decimal value to given decimals (round down)
 function trim(value: bigint, decimals: number): bigint {
   if (decimals === 0 || decimals >= 18) return value;
@@ -112,12 +112,14 @@ describe('Express - Comprehensive Tests', function () {
         expect(await oem.balanceOf(user3.address)).to.be.gt(0);
       });
       it('should re-validate KYC during processing', async function () {
-        const { express, usdo, user1, maintainer, whitelister } = await loadFixture(deployFixture);
+        const { express, usdo, user1, maintainer, whitelister, kycManager } = await loadFixture(
+          deployFixture
+        );
         const amount = ethers.parseUnits('1000', 18);
         // Add deposit request
         await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
         // Revoke KYC
-        await express.connect(whitelister).revokeKycInBulk([user1.address]);
+        await kycManager.connect(whitelister).revokeKycBulk([user1.address]);
         // Processing should revert
         await expect(
           express.connect(maintainer).processDepositQueue(1, amount)
@@ -837,11 +839,22 @@ describe('Express - Comprehensive Tests', function () {
         express.connect(user1).processPendingRedeems(1, LARGE_TOTAL_ASSET)
       ).to.be.revertedWithCustomError(express, 'AccessControlUnauthorizedAccount');
     });
-    it('should only allow WHITELIST_ROLE to grant KYC', async function () {
-      const { express, user1 } = await loadFixture(deployFixture);
+    it('reads KYC state from the configured KycManager', async function () {
+      const { express, kycManager, whitelister, usdo, user1 } = await loadFixture(deployFixture);
+      // user1 is KYC'd in fixture — request should succeed
       await expect(
-        express.connect(user1).grantKycInBulk([user1.address])
-      ).to.be.revertedWithCustomError(express, 'AccessControlUnauthorizedAccount');
+        express
+          .connect(user1)
+          .requestDeposit(await usdo.getAddress(), ethers.parseUnits('1000', 18), user1.address)
+      ).to.not.be.reverted;
+
+      // Revoke at the manager and confirm Express now rejects
+      await kycManager.connect(whitelister).revokeKyc(user1.address);
+      await expect(
+        express
+          .connect(user1)
+          .requestDeposit(await usdo.getAddress(), ethers.parseUnits('1000', 18), user1.address)
+      ).to.be.revertedWithCustomError(express, 'NotInKycList');
     });
     it('should only allow PAUSE_ROLE to pause', async function () {
       const { express, user1 } = await loadFixture(deployFixture);
@@ -1974,6 +1987,101 @@ describe('Express - Comprehensive Tests', function () {
       await expect(
         express.connect(maintainer).updateMgtFeeTo(user2.address)
       ).to.be.revertedWithCustomError(express, 'QueuesNotEmpty');
+    });
+  });
+
+  describe('Express <-> KycManager wiring', () => {
+    it('initialize rejects zero kycManager', async () => {
+      const fx = await loadFixture(deployExpressContracts);
+      const ExpressFactory = await ethers.getContractFactory(
+        'contracts/extension/Express.sol:Express'
+      );
+
+      await expect(
+        upgrades.deployProxy(
+          ExpressFactory,
+          [
+            await fx.oem.getAddress(),
+            await fx.usdo.getAddress(),
+            fx.treasury.address,
+            fx.feeTo.address,
+            fx.treasury.address, // mgtFeeTo
+            fx.admin.address,
+            await fx.assetRegistry.getAddress(),
+            await fx.priceOracle.getAddress(),
+            DEFAULT_MAX_STALE_PERIOD,
+            {
+              depositMinimum: ethers.parseUnits('100', 18),
+              redeemMinimum: ethers.parseUnits('50', 18),
+              firstDepositAmount: ethers.parseUnits('1000', 18),
+            },
+            ethers.ZeroAddress,
+          ],
+          { kind: 'uups', initializer: 'initialize' }
+        )
+      ).to.be.revertedWithCustomError(ExpressFactory, 'InvalidAddress');
+    });
+
+    it('exposes kycManager() and no longer has kycList/grantKycInBulk/revokeKycInBulk/WHITELIST_ROLE', async () => {
+      const { express } = await loadFixture(deployExpressContracts);
+      // Positive: kycManager view exists
+      expect(typeof express.kycManager).to.equal('function');
+      // Negative: removed selectors are gone from the ABI
+      const fragments = express.interface.fragments as any[];
+      expect(fragments.find((f) => f.name === 'kycList')).to.equal(undefined);
+      expect(fragments.find((f) => f.name === 'grantKycInBulk')).to.equal(undefined);
+      expect(fragments.find((f) => f.name === 'revokeKycInBulk')).to.equal(undefined);
+      expect(fragments.find((f) => f.name === 'WHITELIST_ROLE')).to.equal(undefined);
+    });
+
+    it('setKycManager: requires DEFAULT_ADMIN_ROLE, rejects zero, emits event', async () => {
+      const { express, admin, user1 } = await loadFixture(deployExpressContracts);
+      const KycManagerFactory = await ethers.getContractFactory('KycManager');
+      const newMgr = await upgrades.deployProxy(KycManagerFactory, [admin.address], {
+        kind: 'uups',
+        initializer: 'initialize',
+      });
+      await newMgr.waitForDeployment();
+
+      await expect(
+        express.connect(user1).setKycManager(await newMgr.getAddress())
+      ).to.be.revertedWithCustomError(express, 'AccessControlUnauthorizedAccount');
+
+      await expect(
+        express.connect(admin).setKycManager(ethers.ZeroAddress)
+      ).to.be.revertedWithCustomError(express, 'InvalidAddress');
+
+      const old = await express.kycManager();
+      await expect(express.connect(admin).setKycManager(await newMgr.getAddress()))
+        .to.emit(express, 'KycManagerUpdated')
+        .withArgs(old, await newMgr.getAddress());
+    });
+
+    it('setKycManager rotation is gated by empty queues (QueuesNotEmpty)', async () => {
+      const { express, usdo, admin, user1, maintainer } = await loadFixture(deployExpressContracts);
+      const KycManagerFactory = await ethers.getContractFactory('KycManager');
+      const newMgr = await upgrades.deployProxy(KycManagerFactory, [admin.address], {
+        kind: 'uups',
+        initializer: 'initialize',
+      });
+      await newMgr.waitForDeployment();
+
+      // depositQueue not empty -> rotation reverts QueuesNotEmpty
+      await express
+        .connect(user1)
+        .requestDeposit(await usdo.getAddress(), ethers.parseUnits('1000', 18), user1.address);
+
+      await expect(
+        express.connect(admin).setKycManager(await newMgr.getAddress())
+      ).to.be.revertedWithCustomError(express, 'QueuesNotEmpty');
+
+      // Drain queue
+      await express.connect(maintainer).processDepositQueue(1, ethers.parseUnits('1000', 18));
+
+      await expect(express.connect(admin).setKycManager(await newMgr.getAddress())).to.emit(
+        express,
+        'KycManagerUpdated'
+      );
     });
   });
 });

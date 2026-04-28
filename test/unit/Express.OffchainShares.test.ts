@@ -74,7 +74,8 @@ describe('Express - Offchain Shares', function () {
 
   describe('price oracle stale period', function () {
     it('stores the maxStalePeriod passed at initialization', async function () {
-      const { oem, usdo, assetRegistry, admin, treasury, feeTo } = await loadFixture(deployFixture);
+      const { oem, usdo, assetRegistry, admin, treasury, feeTo, kycManager } =
+        await loadFixture(deployFixture);
       const priceOracle = await deployPriceOracle(admin);
       const ExpressFactory = await ethers.getContractFactory(
         'contracts/extension/Express.sol:Express'
@@ -98,6 +99,7 @@ describe('Express - Offchain Shares', function () {
             redeemMinimum: ethers.parseUnits('50', 18),
             firstDepositAmount: ethers.parseUnits('1000', 18),
           },
+          await kycManager.getAddress(),
         ],
         { kind: 'uups', initializer: 'initialize' }
       );
@@ -107,7 +109,8 @@ describe('Express - Offchain Shares', function () {
     });
 
     it('reverts when initialized with a zero priceOracle', async function () {
-      const { oem, usdo, assetRegistry, admin, treasury, feeTo } = await loadFixture(deployFixture);
+      const { oem, usdo, assetRegistry, admin, treasury, feeTo, kycManager } =
+        await loadFixture(deployFixture);
       const ExpressFactory = await ethers.getContractFactory(
         'contracts/extension/Express.sol:Express'
       );
@@ -130,6 +133,7 @@ describe('Express - Offchain Shares', function () {
               redeemMinimum: ethers.parseUnits('50', 18),
               firstDepositAmount: ethers.parseUnits('1000', 18),
             },
+            await kycManager.getAddress(),
           ],
           { kind: 'uups', initializer: 'initialize' }
         )

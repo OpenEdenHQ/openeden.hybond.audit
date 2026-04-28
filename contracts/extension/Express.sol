@@ -14,6 +14,7 @@ import "./DoubleQueueModified.sol";
 import { IToken } from "../interfaces/IToken.sol";
 import "../interfaces/IAssetRegistry.sol";
 import "../interfaces/IPriceFeed.sol";
+import { IKycManager } from "../interfaces/IKycManager.sol";
 
 /**
  * @title Express
@@ -44,7 +45,6 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     //////////////////////////////////////////////////////////////*/
 
     bytes32 public constant PAUSE_ROLE = keccak256("PAUSE_ROLE");
-    bytes32 public constant WHITELIST_ROLE = keccak256("WHITELIST_ROLE");
     bytes32 public constant MAINTAINER_ROLE = keccak256("MAINTAINER_ROLE");
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
     bytes32 public constant UPGRADE_ROLE = keccak256("UPGRADE_ROLE");
@@ -135,8 +135,6 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
 
     // First deposit flag, used to check if the user has made a deposit
     mapping(address => bool) public firstDeposit;
-    // KYC list
-    mapping(address => bool) public kycList;
 
     // T+0 Deposit queue (before price is known)
     mapping(address => mapping(address => uint256)) public depositInfo;
@@ -170,6 +168,9 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     // user => asset => amount
     mapping(address => mapping(address => uint256)) public depositEscrowBalance;
 
+    /// @notice KYC manager (single source of truth, shared with Token). Required (non-zero).
+    address public kycManager;
+
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
     //////////////////////////////////////////////////////////////*/
@@ -188,6 +189,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     event UpdateConvertRedeemRequestsDelay(uint256 delay);
     event UpdateTrimDecimals(uint8 decimals);
     event UpdateRedeemAsset(address indexed oldAsset, address indexed newAsset);
+    event KycManagerUpdated(address indexed oldManager, address indexed newManager);
 
     // Event for adding a deposit request to the queue
     event AddToDepositQueue(
@@ -273,10 +275,6 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     event OffRamp(address indexed to, uint256 amount);
     // Event for updating the first deposit flag
     event UpdateFirstDeposit(address indexed account, bool flag);
-    // Event for granting KYC status to multiple addresses
-    event KycGranted(address[] addresses);
-    // Event for revoking KYC status from multiple addresses
-    event KycRevoked(address[] addresses);
     // Event for escrowing tokens when a banned user's cancel redeem refund cannot be transferred
     event RedeemEscrowIn(address indexed account, uint256 amount);
     // Event for claiming escrowed tokens
@@ -333,6 +331,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
      * @param _priceOracle Address of the price oracle (can be zero address if not using oracle)
      * @param _maxStalePeriod Maximum staleness in seconds (e.g., 86400 for 24 hours)
      * @param cfg Deposit and redeem limiter configuration
+     * @param _kycManager Address of the KYC manager (required, non-zero; shared with Token)
      */
     function initialize(
         address _token,
@@ -344,7 +343,8 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
         address _assetRegistry,
         address _priceOracle,
         uint256 _maxStalePeriod,
-        DepositRedeemLimiterCfg memory cfg
+        DepositRedeemLimiterCfg memory cfg,
+        address _kycManager
     ) external initializer {
         if (
             admin == address(0) ||
@@ -354,7 +354,8 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
             _txFeeTo == address(0) ||
             _mgtFeeTo == address(0) ||
             _assetRegistry == address(0) ||
-            _priceOracle == address(0)
+            _priceOracle == address(0) ||
+            _kycManager == address(0)
         ) revert InvalidAddress();
 
         __AccessControlEnumerable_init();
@@ -367,6 +368,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
         assetRegistry = IAssetRegistry(_assetRegistry);
         priceOracle = IPriceFeed(_priceOracle);
         maxStalePeriod = _maxStalePeriod;
+        kycManager = _kycManager;
 
         __DepositRedeemLimiter_init(cfg.depositMinimum, cfg.redeemMinimum, cfg.firstDepositAmount);
 
@@ -396,6 +398,19 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
         _requireQueuesEmpty();
         priceOracle = IPriceFeed(_address);
         emit UpdatePriceOracle(_address);
+    }
+
+    /**
+     * @notice Rotate the KycManager. Requires DEFAULT_ADMIN_ROLE and all queues empty.
+     * @dev Queue-empty guard: queue processors re-check KYC, so rotating mid-flight could
+     *      strand entries whose user is KYC'd in the old manager but not the new.
+     */
+    function setKycManager(address newManager) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (newManager == address(0)) revert InvalidAddress();
+        _requireQueuesEmpty();
+        address old = kycManager;
+        kycManager = newManager;
+        emit KycManagerUpdated(old, newManager);
     }
 
     /**
@@ -1302,44 +1317,6 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     }
 
     /*//////////////////////////////////////////////////////////////
-                           KYC MANAGEMENT
-    //////////////////////////////////////////////////////////////*/
-
-    /**
-     * @notice Grant KYC status to multiple addresses
-     * @param _addresses Array of addresses to grant KYC
-     */
-    function grantKycInBulk(address[] calldata _addresses) external onlyRole(WHITELIST_ROLE) {
-        uint256 length = _addresses.length;
-
-        for (uint256 i; i < length; ) {
-            kycList[_addresses[i]] = true;
-            unchecked {
-                ++i;
-            }
-        }
-
-        emit KycGranted(_addresses);
-    }
-
-    /**
-     * @notice Revoke KYC status from multiple addresses
-     * @param _addresses Array of addresses to revoke KYC
-     */
-    function revokeKycInBulk(address[] calldata _addresses) external onlyRole(WHITELIST_ROLE) {
-        uint256 length = _addresses.length;
-
-        for (uint256 i; i < length; ) {
-            kycList[_addresses[i]] = false;
-            unchecked {
-                ++i;
-            }
-        }
-
-        emit KycRevoked(_addresses);
-    }
-
-    /*//////////////////////////////////////////////////////////////
                          PAUSABLE FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
@@ -1568,12 +1545,15 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     }
 
     /**
-     * @notice Validate KYC for sender and receiver
+     * @notice Validate KYC for sender and receiver via the configured KycManager
      * @param _sender Sender address
      * @param _receiver Receiver address
      */
     function _validateKyc(address _sender, address _receiver) internal view {
-        if (!kycList[_sender] || !kycList[_receiver]) revert NotInKycList(_sender, _receiver);
+        IKycManager mgr = IKycManager(kycManager);
+        if (!mgr.isKyced(_sender) || !mgr.isKyced(_receiver)) {
+            revert NotInKycList(_sender, _receiver);
+        }
     }
 
     /**
@@ -1762,5 +1742,5 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
      * @dev Storage gap for future upgrades
      * See https://docs.openzeppelin.com/contracts/4.x/upgradeable#storage_gaps
      */
-    uint256[36] private __gap;
+    uint256[35] private __gap;
 }

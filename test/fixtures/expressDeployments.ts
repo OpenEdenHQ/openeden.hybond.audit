@@ -7,6 +7,7 @@ export interface ExpressDeployment {
   express: any;
   assetRegistry: any;
   priceOracle: any;
+  kycManager: any;
   admin: HardhatEthersSigner;
   operator: HardhatEthersSigner;
   maintainer: HardhatEthersSigner;
@@ -30,6 +31,18 @@ export async function deployExpressContracts(): Promise<ExpressDeployment> {
   const usdo = await MockERC20Factory.deploy('USDO Token', 'USDO', 18);
   await usdo.waitForDeployment();
 
+  // Deploy KycManager (shared by Token + Express)
+  const KycManagerFactory = await ethers.getContractFactory('KycManager');
+  const kycManager = await upgrades.deployProxy(KycManagerFactory, [admin.address], {
+    kind: 'uups',
+    initializer: 'initialize',
+  });
+  await kycManager.waitForDeployment();
+
+  // Grant WHITELIST_ROLE on KycManager to whitelister so existing tests can use that signer
+  const KYC_WHITELIST_ROLE = await kycManager.WHITELIST_ROLE();
+  await kycManager.connect(admin).grantRole(KYC_WHITELIST_ROLE, whitelister.address);
+
   // Deploy OEM token
   const OEMFactory = await ethers.getContractFactory('Token');
   const oem = await upgrades.deployProxy(
@@ -39,7 +52,7 @@ export async function deployExpressContracts(): Promise<ExpressDeployment> {
       'OEM',
       admin.address,
       ethers.parseUnits('10000000', 18),
-      ethers.ZeroAddress,
+      await kycManager.getAddress(),
     ],
     { kind: 'uups', initializer: 'initialize' }
   );
@@ -96,6 +109,7 @@ export async function deployExpressContracts(): Promise<ExpressDeployment> {
         redeemMinimum: ethers.parseUnits('50', 18), // 50 OEM minimum
         firstDepositAmount: ethers.parseUnits('1000', 18), // 1000 OEM first deposit
       },
+      await kycManager.getAddress(),
     ],
     { kind: 'uups', initializer: 'initialize' }
   );
@@ -110,13 +124,11 @@ export async function deployExpressContracts(): Promise<ExpressDeployment> {
   // Grant roles to designated accounts
   const OPERATOR_ROLE = await express.OPERATOR_ROLE();
   const MAINTAINER_ROLE = await express.MAINTAINER_ROLE();
-  const WHITELIST_ROLE = await express.WHITELIST_ROLE();
   const PAUSE_ROLE = await express.PAUSE_ROLE();
   const UPGRADE_ROLE = await express.UPGRADE_ROLE();
 
   await express.connect(admin).grantRole(OPERATOR_ROLE, operator.address);
   await express.connect(admin).grantRole(MAINTAINER_ROLE, maintainer.address);
-  await express.connect(admin).grantRole(WHITELIST_ROLE, whitelister.address);
   await express.connect(admin).grantRole(PAUSE_ROLE, pauser.address);
   await express.connect(admin).grantRole(UPGRADE_ROLE, admin.address);
 
@@ -136,10 +148,18 @@ export async function deployExpressContracts(): Promise<ExpressDeployment> {
   await express.connect(maintainer).updateConvertRedeemRequestsDelay(2 * 24 * 60 * 60); // 2 days
   await express.connect(maintainer).updateTimeBuffer(72000); // 20 hours
 
-  // Grant KYC to test users
-  await express
+  // Grant KYC to test users + Express itself (Token enforces KYC on _update; Express
+  // is on both sides of mint/burn/transfer flows so it must be KYC'd too).
+  await kycManager
     .connect(whitelister)
-    .grantKycInBulk([user1.address, user2.address, user3.address, treasury.address, feeTo.address]);
+    .grantKycBulk([
+      user1.address,
+      user2.address,
+      user3.address,
+      treasury.address,
+      feeTo.address,
+      await express.getAddress(),
+    ]);
 
   return {
     oem,
@@ -147,6 +167,7 @@ export async function deployExpressContracts(): Promise<ExpressDeployment> {
     express,
     assetRegistry,
     priceOracle,
+    kycManager,
     admin,
     operator,
     maintainer,
