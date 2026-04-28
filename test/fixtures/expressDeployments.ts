@@ -34,7 +34,13 @@ export async function deployExpressContracts(): Promise<ExpressDeployment> {
   const OEMFactory = await ethers.getContractFactory('Token');
   const oem = await upgrades.deployProxy(
     OEMFactory,
-    ['OEM Multi Strategy Yield', 'OEM', admin.address, ethers.parseUnits('10000000', 18)],
+    [
+      'OEM Multi Strategy Yield',
+      'OEM',
+      admin.address,
+      ethers.parseUnits('10000000', 18),
+      ethers.ZeroAddress,
+    ],
     { kind: 'uups', initializer: 'initialize' }
   );
   await oem.waitForDeployment();

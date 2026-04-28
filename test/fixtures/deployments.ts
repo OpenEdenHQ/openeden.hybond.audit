@@ -22,7 +22,13 @@ export async function deployCoreContracts(): Promise<CoreDeployment> {
   const OEMFactory = await ethers.getContractFactory('Token');
   const oem = await upgrades.deployProxy(
     OEMFactory,
-    ['OEM Multi Strategy Yield', 'OEM', admin.address, ethers.parseUnits('1000000', 18)],
+    [
+      'OEM Multi Strategy Yield',
+      'OEM',
+      admin.address,
+      ethers.parseUnits('1000000', 18),
+      ethers.ZeroAddress,
+    ],
     { kind: 'uups', initializer: 'initialize' }
   );
   await oem.waitForDeployment();

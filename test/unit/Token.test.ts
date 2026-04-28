@@ -2,6 +2,7 @@ import { expect } from 'chai';
 import { ethers, upgrades } from 'hardhat';
 import { loadFixture, time } from '@nomicfoundation/hardhat-network-helpers';
 import { deployCoreContracts } from '../fixtures/deployments';
+import { deployKycManager } from '../fixtures/kycManagerDeployments';
 import { HardhatEthersSigner } from '@nomicfoundation/hardhat-ethers/signers';
 
 describe('OEM Token', function () {
@@ -52,7 +53,13 @@ describe('OEM Token', function () {
       await expect(
         upgrades.deployProxy(
           OEMFactory,
-          ['USDO Prime', 'OEM', ethers.ZeroAddress, ethers.parseUnits('1000000', 18)],
+          [
+            'USDO Prime',
+            'OEM',
+            ethers.ZeroAddress,
+            ethers.parseUnits('1000000', 18),
+            ethers.ZeroAddress,
+          ],
           { kind: 'uups', initializer: 'initialize' }
         )
       ).to.be.revertedWithCustomError(OEMFactory, 'InvalidAddress');
@@ -68,7 +75,13 @@ describe('OEM Token', function () {
       const { oem, admin } = await loadFixture(deployFixture);
 
       await expect(
-        oem.initialize('New Name', 'NEW', admin.address, ethers.parseUnits('1000000', 18))
+        oem.initialize(
+          'New Name',
+          'NEW',
+          admin.address,
+          ethers.parseUnits('1000000', 18),
+          ethers.ZeroAddress
+        )
       ).to.be.revertedWithCustomError(oem, 'InvalidInitialization');
     });
   });
@@ -177,7 +190,7 @@ describe('OEM Token', function () {
       const OEMFactory = await ethers.getContractFactory('Token');
       const oem = await upgrades.deployProxy(
         OEMFactory,
-        ['USDO Prime', 'OEM', admin.address, 0], // 0 = unlimited
+        ['USDO Prime', 'OEM', admin.address, 0, ethers.ZeroAddress], // 0 = unlimited
         { kind: 'uups', initializer: 'initialize' }
       );
 
@@ -779,7 +792,13 @@ describe('OEM Token', function () {
         upgrades.upgradeProxy(await oem.getAddress(), OEMFactory, {
           call: {
             fn: 'initialize',
-            args: ['USDO Prime', 'OEM', admin.address, ethers.parseUnits('1000000', 18)],
+            args: [
+              'USDO Prime',
+              'OEM',
+              admin.address,
+              ethers.parseUnits('1000000', 18),
+              ethers.ZeroAddress,
+            ],
           },
         })
       ).to.be.revertedWithCustomError(OEMFactory, 'InvalidInitialization');
@@ -888,5 +907,171 @@ describe('OEM Token', function () {
         expect(await oem.isBanned(addr)).to.be.true;
       }
     });
+  });
+});
+
+describe('Token KYC gating', () => {
+  async function deployPermissionedToken() {
+    const kyc = await deployKycManager();
+    const TokenFactory = await ethers.getContractFactory('Token');
+    const token = await upgrades.deployProxy(
+      TokenFactory,
+      [
+        'HYBOND',
+        'HBND',
+        kyc.admin.address,
+        ethers.parseUnits('10000000', 18),
+        await kyc.kycManager.getAddress(),
+      ],
+      { kind: 'uups', initializer: 'initialize' }
+    );
+    await token.waitForDeployment();
+
+    const MINTER_ROLE = await token.MINTER_ROLE();
+    const BURNER_ROLE = await token.BURNER_ROLE();
+    await token.connect(kyc.admin).grantRole(MINTER_ROLE, kyc.admin.address);
+    await token.connect(kyc.admin).grantRole(BURNER_ROLE, kyc.admin.address);
+
+    return { token, ...kyc };
+  }
+
+  async function deployPermissionlessToken() {
+    const [admin, user1, user2] = await ethers.getSigners();
+    const TokenFactory = await ethers.getContractFactory('Token');
+    const token = await upgrades.deployProxy(
+      TokenFactory,
+      ['HYBOND', 'HBND', admin.address, ethers.parseUnits('10000000', 18), ethers.ZeroAddress],
+      { kind: 'uups', initializer: 'initialize' }
+    );
+    await token.waitForDeployment();
+    const MINTER_ROLE = await token.MINTER_ROLE();
+    const BURNER_ROLE = await token.BURNER_ROLE();
+    await token.connect(admin).grantRole(MINTER_ROLE, admin.address);
+    await token.connect(admin).grantRole(BURNER_ROLE, admin.address);
+    return { token, admin, user1, user2 };
+  }
+
+  it('permissionless mode: any address can hold and transfer', async () => {
+    const { token, admin, user1, user2 } = await loadFixture(deployPermissionlessToken);
+    await token.connect(admin).mint(user1.address, ethers.parseUnits('100', 18));
+    await token.connect(user1).transfer(user2.address, ethers.parseUnits('10', 18));
+    expect(await token.balanceOf(user2.address)).to.equal(ethers.parseUnits('10', 18));
+  });
+
+  it('permissioned mode: mint to non-KYC address reverts NotKyced', async () => {
+    const { token, admin, user1 } = await loadFixture(deployPermissionedToken);
+    await expect(token.connect(admin).mint(user1.address, 1n))
+      .to.be.revertedWithCustomError(token, 'NotKyced')
+      .withArgs(user1.address);
+  });
+
+  it('permissioned mode: mint to KYC address succeeds', async () => {
+    const { token, kycManager, whitelister, admin, user1 } = await loadFixture(
+      deployPermissionedToken
+    );
+    await kycManager.connect(whitelister).grantKyc(user1.address);
+    await token.connect(admin).mint(user1.address, ethers.parseUnits('100', 18));
+    expect(await token.balanceOf(user1.address)).to.equal(ethers.parseUnits('100', 18));
+  });
+
+  it('permissioned mode: transfer between two KYC addresses succeeds', async () => {
+    const { token, kycManager, whitelister, admin, user1, user2 } = await loadFixture(
+      deployPermissionedToken
+    );
+    await kycManager.connect(whitelister).grantKycBulk([user1.address, user2.address]);
+    await token.connect(admin).mint(user1.address, ethers.parseUnits('100', 18));
+    await token.connect(user1).transfer(user2.address, ethers.parseUnits('10', 18));
+    expect(await token.balanceOf(user2.address)).to.equal(ethers.parseUnits('10', 18));
+  });
+
+  it('permissioned mode: transfer from non-KYC sender reverts', async () => {
+    const { token, kycManager, whitelister, admin, user1, user2 } = await loadFixture(
+      deployPermissionedToken
+    );
+    await kycManager.connect(whitelister).grantKyc(user1.address);
+    await kycManager.connect(whitelister).grantKyc(user2.address);
+    await token.connect(admin).mint(user1.address, ethers.parseUnits('100', 18));
+    await kycManager.connect(whitelister).revokeKyc(user1.address);
+
+    await expect(token.connect(user1).transfer(user2.address, 1n))
+      .to.be.revertedWithCustomError(token, 'NotKyced')
+      .withArgs(user1.address);
+  });
+
+  it('permissioned mode: transfer to non-KYC receiver reverts', async () => {
+    const { token, kycManager, whitelister, admin, user1, user2 } = await loadFixture(
+      deployPermissionedToken
+    );
+    await kycManager.connect(whitelister).grantKyc(user1.address);
+    await token.connect(admin).mint(user1.address, ethers.parseUnits('100', 18));
+    await expect(token.connect(user1).transfer(user2.address, 1n))
+      .to.be.revertedWithCustomError(token, 'NotKyced')
+      .withArgs(user2.address);
+  });
+
+  it('permissioned mode: burn from non-KYC address reverts', async () => {
+    const { token, kycManager, whitelister, admin, user1 } = await loadFixture(
+      deployPermissionedToken
+    );
+    await kycManager.connect(whitelister).grantKyc(user1.address);
+    await token.connect(admin).mint(user1.address, ethers.parseUnits('100', 18));
+    await kycManager.connect(whitelister).revokeKyc(user1.address);
+    await expect(token.connect(admin).burn(user1.address, 1n))
+      .to.be.revertedWithCustomError(token, 'NotKyced')
+      .withArgs(user1.address);
+  });
+
+  it('ban check fires before KYC check (preserves existing order)', async () => {
+    const { token, kycManager, whitelister, admin, user1, user2 } = await loadFixture(
+      deployPermissionedToken
+    );
+    await kycManager.connect(whitelister).grantKycBulk([user1.address, user2.address]);
+    await token.connect(admin).mint(user1.address, ethers.parseUnits('100', 18));
+
+    // ban user1; user1 is still KYC'd
+    const BANLIST_ROLE = await token.BANLIST_ROLE();
+    await token.connect(admin).grantRole(BANLIST_ROLE, admin.address);
+    await token.connect(admin).banAddresses([user1.address]);
+
+    await expect(token.connect(user1).transfer(user2.address, 1n)).to.be.revertedWithCustomError(
+      token,
+      'BannedSender'
+    );
+  });
+
+  it('setKycManager: only DEFAULT_ADMIN_ROLE; emits KycManagerUpdated; accepts zero', async () => {
+    const { token, admin, user1 } = await loadFixture(deployPermissionedToken);
+
+    await expect(token.connect(user1).setKycManager(ethers.ZeroAddress))
+      .to.be.revertedWithCustomError(token, 'AccessControlUnauthorizedAccount');
+
+    const oldManager = await token.kycManager();
+    await expect(token.connect(admin).setKycManager(ethers.ZeroAddress))
+      .to.emit(token, 'KycManagerUpdated')
+      .withArgs(oldManager, ethers.ZeroAddress);
+    expect(await token.kycManager()).to.equal(ethers.ZeroAddress);
+  });
+
+  it('setKycManager to zero flips Token to permissionless', async () => {
+    const { token, admin, user1, user2 } = await loadFixture(deployPermissionedToken);
+    await token.connect(admin).setKycManager(ethers.ZeroAddress);
+    // No KYC needed now
+    await token.connect(admin).mint(user1.address, ethers.parseUnits('100', 18));
+    await token.connect(user1).transfer(user2.address, ethers.parseUnits('10', 18));
+    expect(await token.balanceOf(user2.address)).to.equal(ethers.parseUnits('10', 18));
+  });
+
+  it('manager-revert bubbles up', async () => {
+    const { token, admin, user1 } = await loadFixture(deployPermissionedToken);
+
+    const RevertMock = await ethers.getContractFactory('KycManagerRevertMock');
+    const mock = await RevertMock.deploy();
+    await mock.waitForDeployment();
+
+    await token.connect(admin).setKycManager(await mock.getAddress());
+    await expect(token.connect(admin).mint(user1.address, 1n)).to.be.revertedWithCustomError(
+      mock,
+      'MockBoom'
+    );
   });
 });

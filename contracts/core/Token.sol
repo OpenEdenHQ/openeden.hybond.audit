@@ -5,6 +5,7 @@ import { ERC20Upgradeable } from "@openzeppelin/contracts-upgradeable/token/ERC2
 import { ERC20PausableUpgradeable } from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PausableUpgradeable.sol";
 import { AccessControlEnumerableUpgradeable } from "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
 import { UUPSUpgradeable } from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
+import { IKycManager } from "../interfaces/IKycManager.sol";
 
 /**
  * @title Token
@@ -27,12 +28,14 @@ contract Token is ERC20Upgradeable, ERC20PausableUpgradeable, AccessControlEnume
 
     uint256 public issueCap;
     mapping(address => bool) private _bannedList;
+    address public kycManager;
 
     event Mint(address indexed to, uint256 amount);
     event Burn(address indexed from, uint256 amount);
     event IssueCapUpdated(uint256 oldCap, uint256 newCap);
     event AccountBanned(address indexed addr);
     event AccountUnbanned(address indexed addr);
+    event KycManagerUpdated(address indexed oldManager, address indexed newManager);
 
     error InvalidAddress();
     error InvalidAmount();
@@ -42,6 +45,7 @@ contract Token is ERC20Upgradeable, ERC20PausableUpgradeable, AccessControlEnume
     error BannedRecipient(address recipient);
     error InvalidBannedAccount(address account);
     error BatchSizeTooLarge();
+    error NotKyced(address account);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -54,12 +58,14 @@ contract Token is ERC20Upgradeable, ERC20PausableUpgradeable, AccessControlEnume
      * @param _symbol Token symbol
      * @param _admin Default admin address
      * @param _issueCap Maximum supply limit (0 = unlimited)
+     * @param _kycManager KYC manager address (address(0) = permissionless mode)
      */
     function initialize(
         string memory _name,
         string memory _symbol,
         address _admin,
-        uint256 _issueCap
+        uint256 _issueCap,
+        address _kycManager
     ) public initializer {
         __ERC20_init(_name, _symbol);
         __ERC20Pausable_init();
@@ -69,6 +75,7 @@ contract Token is ERC20Upgradeable, ERC20PausableUpgradeable, AccessControlEnume
 
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
         issueCap = _issueCap;
+        kycManager = _kycManager;
     }
 
     /**
@@ -157,6 +164,15 @@ contract Token is ERC20Upgradeable, ERC20PausableUpgradeable, AccessControlEnume
     }
 
     /**
+     * @notice Set or rotate the KycManager. Pass address(0) to flip to permissionless mode.
+     */
+    function setKycManager(address newManager) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        address old = kycManager;
+        kycManager = newManager;
+        emit KycManagerUpdated(old, newManager);
+    }
+
+    /**
      * @notice Ban an account
      * @param account The address to ban
      */
@@ -220,9 +236,10 @@ contract Token is ERC20Upgradeable, ERC20PausableUpgradeable, AccessControlEnume
     }
 
     /**
-     * @notice Override _update to add ban check and pause check
+     * @notice Override _update to add ban check, KYC check, and pause check
      * @dev Called on mint, burn, and transfer
      * @dev Ban checks apply to ALL operations including mint and burn for regulatory compliance
+     * @dev KYC gate runs only when kycManager != address(0) (permissioned mode)
      * @dev Pause check handled by ERC20PausableUpgradeable parent
      */
     function _update(
@@ -237,6 +254,13 @@ contract Token is ERC20Upgradeable, ERC20PausableUpgradeable, AccessControlEnume
         // Check recipient ban status (including mints TO banned addresses)
         if (to != address(0) && isBanned(to)) {
             revert BannedRecipient(to);
+        }
+
+        // KYC gate (permissionless when kycManager == address(0))
+        address mgr = kycManager;
+        if (mgr != address(0)) {
+            if (from != address(0) && !IKycManager(mgr).isKyced(from)) revert NotKyced(from);
+            if (to != address(0) && !IKycManager(mgr).isKyced(to)) revert NotKyced(to);
         }
 
         // Pause check is handled by super._update() via ERC20PausableUpgradeable
@@ -256,5 +280,5 @@ contract Token is ERC20Upgradeable, ERC20PausableUpgradeable, AccessControlEnume
      * variables without shifting down storage in the inheritance chain.
      * See https://docs.openzeppelin.com/contracts/4.x/upgradeable#storage_gaps
      */
-    uint256[45] private __gap;
+    uint256[44] private __gap;
 }
