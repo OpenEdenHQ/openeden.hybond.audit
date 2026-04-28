@@ -136,6 +136,9 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     // First deposit flag, used to check if the user has made a deposit
     mapping(address => bool) public firstDeposit;
 
+    /// @notice KYC manager (single source of truth, shared with Token). Required (non-zero).
+    address public kycManager;
+
     // T+0 Deposit queue (before price is known)
     mapping(address => mapping(address => uint256)) public depositInfo;
     DoubleQueueModified.BytesDeque private depositQueue;
@@ -167,9 +170,6 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     // Escrowed deposit asset balances credited on cancelDeposit; claimable via claimDepositEscrow()
     // user => asset => amount
     mapping(address => mapping(address => uint256)) public depositEscrowBalance;
-
-    /// @notice KYC manager (single source of truth, shared with Token). Required (non-zero).
-    address public kycManager;
 
     /*//////////////////////////////////////////////////////////////
                                  EVENTS

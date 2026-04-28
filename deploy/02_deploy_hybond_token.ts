@@ -34,13 +34,36 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   const adminConfig = getConfigValue<string>(commonConfig, 'admin');
   const admin = adminConfig === ethers.ZeroAddress ? deployer : adminConfig;
 
+  // Resolve KycManager (permissioned mode only)
+  const tokenPermissioned = getConfigValue<boolean>(commonConfig, 'tokenPermissioned');
+  let kycManagerAddress: string = ethers.ZeroAddress;
+  if (tokenPermissioned) {
+    try {
+      const km = await get('KycManager');
+      kycManagerAddress = km.address;
+    } catch {
+      throw new Error(
+        'tokenPermissioned=true but KycManager not deployed. Run 02a_deploy_kyc_manager.ts first.'
+      );
+    }
+  }
+  console.log(
+    '📌 KycManager:',
+    kycManagerAddress,
+    tokenPermissioned ? '(permissioned)' : '(permissionless)'
+  );
+
   // Deploy HYBOND
   console.log('\n1️⃣ Deploying HYBOND token...');
   const Token = await ethers.getContractFactory('Token');
-  const hybond = await upgrades.deployProxy(Token, [name, symbol, admin, issueCap], {
-    initializer: 'initialize',
-    kind: 'uups',
-  });
+  const hybond = await upgrades.deployProxy(
+    Token,
+    [name, symbol, admin, issueCap, kycManagerAddress],
+    {
+      initializer: 'initialize',
+      kind: 'uups',
+    }
+  );
   await hybond.waitForDeployment();
   const hybondTokenAddress = await hybond.getAddress();
   console.log('✅ HYBOND Token deployed to:', hybondTokenAddress);

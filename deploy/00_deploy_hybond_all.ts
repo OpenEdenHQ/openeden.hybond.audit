@@ -30,6 +30,7 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   const tokenName = getConfigValue<string>(hybondConfig, 'name');
   const tokenSymbol = getConfigValue<string>(hybondConfig, 'symbol');
   const tokenIssueCap = ethers.parseUnits(getConfigValue<string>(hybondConfig, 'issueCap'), 18);
+  const tokenPermissioned = getConfigValue<boolean>(commonConfig, 'tokenPermissioned');
 
   // Express parameters
   const depositMinimum = ethers.parseUnits(
@@ -79,14 +80,37 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   }
 
   // ============================================
+  // 1.5. Deploy KycManager
+  // ============================================
+  console.log('\n1️⃣.5️⃣ Deploying KycManager...');
+  const KycManagerFactory = await ethers.getContractFactory('KycManager');
+  const kycManager = await upgrades.deployProxy(KycManagerFactory, [admin], {
+    initializer: 'initialize',
+    kind: 'uups',
+  });
+  await kycManager.waitForDeployment();
+  const kycManagerAddress = await kycManager.getAddress();
+  console.log('✅ KycManager deployed to:', kycManagerAddress);
+
+  const tokenKycManagerArg = tokenPermissioned ? kycManagerAddress : ethers.ZeroAddress;
+  console.log(
+    '📌 Token mode:',
+    tokenPermissioned ? `permissioned (kycManager=${kycManagerAddress})` : 'permissionless'
+  );
+
+  // ============================================
   // 2. Deploy HYBOND Token
   // ============================================
   console.log('\n2️⃣ Deploying HYBOND token...');
   const Token = await ethers.getContractFactory('Token');
-  const hybond = await upgrades.deployProxy(Token, [tokenName, tokenSymbol, admin, tokenIssueCap], {
-    initializer: 'initialize',
-    kind: 'uups',
-  });
+  const hybond = await upgrades.deployProxy(
+    Token,
+    [tokenName, tokenSymbol, admin, tokenIssueCap, tokenKycManagerArg],
+    {
+      initializer: 'initialize',
+      kind: 'uups',
+    }
+  );
   await hybond.waitForDeployment();
   const hybondTokenAddress = await hybond.getAddress();
   console.log('✅ HYBOND Token deployed to:', hybondTokenAddress);
@@ -213,6 +237,7 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
         redeemMinimum,
         firstDepositAmount,
       },
+      kycManagerAddress,
     ],
     {
       initializer: 'initialize',
@@ -235,10 +260,28 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
     const grantBurnerTx = await hybond.grantRole(BURNER_ROLE, expressAddress);
     await grantBurnerTx.wait();
     console.log('✅ BURNER_ROLE granted to Express');
+
+    if (tokenPermissioned) {
+      console.log('📌 Granting WHITELIST_ROLE on KycManager to deployer (for initial KYC ops)...');
+      const WHITELIST_ROLE = await kycManager.WHITELIST_ROLE();
+      const grantWhitelistTx = await kycManager.grantRole(WHITELIST_ROLE, deployer);
+      await grantWhitelistTx.wait();
+      console.log('✅ WHITELIST_ROLE granted to deployer on KycManager');
+
+      console.log('📌 KYC-listing the Express contract address (required for token flows)...');
+      const kycExpressTx = await kycManager.grantKyc(expressAddress);
+      await kycExpressTx.wait();
+      console.log('✅ Express contract KYC-listed on KycManager');
+    }
   } else {
     console.log(
       '⚠️  Common.admin is not the deployer. The HYBOND admin must grant MINTER_ROLE and BURNER_ROLE to Express manually.'
     );
+    if (tokenPermissioned) {
+      console.log(
+        '⚠️  In permissioned-Token mode: admin MUST grant WHITELIST_ROLE on KycManager + call kycManager.grantKyc(express) before any token flow.'
+      );
+    }
   }
 
   // ============================================
@@ -251,6 +294,11 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
       abi: MockERC20Factory.interface.format() as any,
     });
   }
+
+  await deployerDeployments.save('KycManager', {
+    address: kycManagerAddress,
+    abi: KycManagerFactory.interface.format() as any,
+  });
 
   await deployerDeployments.save('HYBOND', {
     address: hybondTokenAddress,
@@ -281,6 +329,7 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   } else {
     console.log('USDC Token:', usdcAddressFinal);
   }
+  console.log('KycManager:', kycManagerAddress);
   console.log('HYBOND Token:', hybondTokenAddress);
   console.log('AssetRegistry:', assetRegistryAddress);
   console.log('PriceOracle:', priceOracleAddress);
@@ -307,12 +356,14 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
     await new Promise((resolve) => setTimeout(resolve, 30000)); // 30 seconds
 
     // Get implementation addresses
+    const kycManagerImpl = await upgrades.erc1967.getImplementationAddress(kycManagerAddress);
     const hybondImpl = await upgrades.erc1967.getImplementationAddress(hybondTokenAddress);
     const assetRegistryImpl = await upgrades.erc1967.getImplementationAddress(assetRegistryAddress);
     const priceOracleImpl = await upgrades.erc1967.getImplementationAddress(priceOracleAddress);
     const expressImpl = await upgrades.erc1967.getImplementationAddress(expressAddress);
 
     console.log('\n🔍 Implementation addresses:');
+    console.log('KycManager:', kycManagerImpl);
     console.log('HYBOND:', hybondImpl);
     console.log('AssetRegistry:', assetRegistryImpl);
     console.log('PriceOracle:', priceOracleImpl);
@@ -337,6 +388,7 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
       await verifyContract('MockERC20', usdcAddressFinal, ['USD Coin', 'USDC', 6]);
     }
 
+    await verifyContract('KycManager', kycManagerImpl);
     await verifyContract('HYBOND', hybondImpl);
     await verifyContract('AssetRegistry', assetRegistryImpl);
     await verifyContract('PriceOracle', priceOracleImpl, [oracleDecimals]);

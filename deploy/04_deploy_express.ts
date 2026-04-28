@@ -36,6 +36,14 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   const hybondTokenAddress = getConfigValue<string>(expressConfig, 'hybondTokenAddress');
   const assetRegistryAddress = getConfigValue<string>(expressConfig, 'assetRegistryAddress');
 
+  let kycManagerAddress: string;
+  try {
+    const km = await get('KycManager');
+    kycManagerAddress = km.address;
+  } catch {
+    throw new Error('KycManager not deployed. Run 02a_deploy_kyc_manager.ts first.');
+  }
+
   /*
   try {
     const hybondDeployment = await get('HYBOND');
@@ -101,6 +109,7 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
         redeemMinimum,
         firstDepositAmount,
       },
+      kycManagerAddress,
     ],
     {
       initializer: 'initialize',
@@ -207,7 +216,15 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   console.log('\n🎉 HYBOND system contracts deployed!');
   console.log('\n💡 Next steps:');
   console.log('   - Configure AssetRegistry with asset configurations');
-  console.log('   - Grant KYC status to users via grantKycInBulk()');
+  console.log(
+    '   - Grant WHITELIST_ROLE on KycManager to operational signer, then call kycManager.grantKycBulk([...])'
+  );
+  console.log(
+    '   - In permissioned-Token deployments, the Express contract address itself MUST be KYC-listed'
+  );
+  console.log(
+    "     (tokens transit through Express on cancel-refund and mgtFeeTo flows; un-KYC'd Express bricks those paths)"
+  );
   console.log('   - Set deposit and redeem fee rates if needed');
 };
 

@@ -1,6 +1,7 @@
 {
   "Common": {
-    "admin": "0x0000000000000000000000000000000000000000"
+    "admin": "0x0000000000000000000000000000000000000000",
+    "tokenPermissioned": true
   },
   "HYBOND": {
     "name": "Tokenized BNY High-yield Bond Fund",
