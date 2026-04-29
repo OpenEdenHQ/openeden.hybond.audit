@@ -102,9 +102,10 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     //    manual cancelPendingRedeem / cancelRedeem.
     // 7. Queue-time parameters are read live at processing time, not snapshotted at request time.
     //    Do NOT change convertRedeemRequestsDelay, redeemFeeRate, depositFeeRate, priceOracle,
-    //    maxStalePeriod, or trimDecimals while pendingRedeemQueue / redeemQueue / depositQueue is
-    //    non-empty — doing so will silently change the pricing, fees, or settlement timing of
-    //    already-queued entries relative to what the user saw when they submitted.
+    //    maxStalePeriod, trimDecimals, depositMaxDeviationBps, or redeemMaxDeviationBps while
+    //    pendingRedeemQueue / redeemQueue / depositQueue is non-empty — doing so will silently
+    //    change the pricing, fees, or settlement timing of already-queued entries relative to
+    //    what the user saw when they submitted.
     address public mgtFeeTo;
 
     // Management fee rate (in basis points, 1e4)
@@ -171,6 +172,14 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     // user => asset => amount
     mapping(address => mapping(address => uint256)) public depositEscrowBalance;
 
+    // Symmetric oracle deviation tolerance (basis points, BPS_BASE = 10000) for processDepositQueue.
+    // 0 = strict equality with oracle; > BPS_BASE rejected by setter. Skipped when priceOracle unset.
+    uint256 public depositMaxDeviationBps;
+
+    // Symmetric oracle deviation tolerance (basis points, BPS_BASE = 10000) for processPendingRedeems.
+    // 0 = strict equality with oracle; > BPS_BASE rejected by setter. Skipped when priceOracle unset.
+    uint256 public redeemMaxDeviationBps;
+
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
     //////////////////////////////////////////////////////////////*/
@@ -190,6 +199,8 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     event UpdateTrimDecimals(uint8 decimals);
     event UpdateRedeemAsset(address indexed oldAsset, address indexed newAsset);
     event KycManagerUpdated(address indexed oldManager, address indexed newManager);
+    event UpdateDepositMaxDeviationBps(uint256 bps);
+    event UpdateRedeemMaxDeviationBps(uint256 bps);
 
     // Event for adding a deposit request to the queue
     event AddToDepositQueue(
@@ -305,6 +316,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     error QueuesNotEmpty();
     error InsufficientOffchainShares();
     error InsufficientSettlementFunds(uint256 oracleTotal, uint256 suppliedTotal);
+    error OracleDeviationExceeded(uint256 actual, uint256 expected, uint256 bps);
 
     /*//////////////////////////////////////////////////////////////
                               CONSTRUCTOR
@@ -532,6 +544,28 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     }
 
     /**
+     * @notice Update the symmetric oracle deviation tolerance for processDepositQueue
+     * @param _bps Deviation tolerance in basis points (0 = strict, max = BPS_BASE)
+     */
+    function updateDepositMaxDeviationBps(uint256 _bps) external onlyRole(MAINTAINER_ROLE) {
+        if (_bps > BPS_BASE) revert InvalidInput(_bps);
+        _requireQueuesEmpty();
+        depositMaxDeviationBps = _bps;
+        emit UpdateDepositMaxDeviationBps(_bps);
+    }
+
+    /**
+     * @notice Update the symmetric oracle deviation tolerance for processPendingRedeems
+     * @param _bps Deviation tolerance in basis points (0 = strict, max = BPS_BASE)
+     */
+    function updateRedeemMaxDeviationBps(uint256 _bps) external onlyRole(MAINTAINER_ROLE) {
+        if (_bps > BPS_BASE) revert InvalidInput(_bps);
+        _requireQueuesEmpty();
+        redeemMaxDeviationBps = _bps;
+        emit UpdateRedeemMaxDeviationBps(_bps);
+    }
+
+    /**
      * @notice Update the number of decimals to keep when trimming amounts
      * @param _decimals Number of decimals to keep (0-18)
      */
@@ -669,6 +703,22 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
             price = price / 10 ** (decimals - 18);
         }
         // If decimals == 18, price remains unchanged
+    }
+
+    /**
+     * @notice Symmetric oracle deviation guard
+     * @dev Reverts if |actual - expected| / expected exceeds bps / BPS_BASE.
+     *      No-op when expected == 0 (degenerate; empty batches do not reach this).
+     * @param actual Operator-supplied value
+     * @param expected Oracle-derived value
+     * @param bps Tolerance in basis points (BPS_BASE = 10000)
+     */
+    function _checkDeviation(uint256 actual, uint256 expected, uint256 bps) internal pure {
+        if (expected == 0) return;
+        uint256 diff = actual > expected ? actual - expected : expected - actual;
+        if (diff * BPS_BASE > expected * bps) {
+            revert OracleDeviationExceeded(actual, expected, bps);
+        }
     }
 
     /*//////////////////////////////////////////////////////////////
