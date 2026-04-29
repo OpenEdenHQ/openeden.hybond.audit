@@ -966,18 +966,16 @@ describe('Token KYC gating', () => {
   });
 
   it('permissioned mode: mint to KYC address succeeds', async () => {
-    const { token, kycManager, whitelister, admin, user1 } = await loadFixture(
-      deployPermissionedToken
-    );
+    const { token, kycManager, whitelister, admin, user1 } =
+      await loadFixture(deployPermissionedToken);
     await kycManager.connect(whitelister).grantKyc(user1.address);
     await token.connect(admin).mint(user1.address, ethers.parseUnits('100', 18));
     expect(await token.balanceOf(user1.address)).to.equal(ethers.parseUnits('100', 18));
   });
 
   it('permissioned mode: transfer between two KYC addresses succeeds', async () => {
-    const { token, kycManager, whitelister, admin, user1, user2 } = await loadFixture(
-      deployPermissionedToken
-    );
+    const { token, kycManager, whitelister, admin, user1, user2 } =
+      await loadFixture(deployPermissionedToken);
     await kycManager.connect(whitelister).grantKycBulk([user1.address, user2.address]);
     await token.connect(admin).mint(user1.address, ethers.parseUnits('100', 18));
     await token.connect(user1).transfer(user2.address, ethers.parseUnits('10', 18));
@@ -985,9 +983,8 @@ describe('Token KYC gating', () => {
   });
 
   it('permissioned mode: transfer from non-KYC sender reverts', async () => {
-    const { token, kycManager, whitelister, admin, user1, user2 } = await loadFixture(
-      deployPermissionedToken
-    );
+    const { token, kycManager, whitelister, admin, user1, user2 } =
+      await loadFixture(deployPermissionedToken);
     await kycManager.connect(whitelister).grantKyc(user1.address);
     await kycManager.connect(whitelister).grantKyc(user2.address);
     await token.connect(admin).mint(user1.address, ethers.parseUnits('100', 18));
@@ -999,9 +996,8 @@ describe('Token KYC gating', () => {
   });
 
   it('permissioned mode: transfer to non-KYC receiver reverts', async () => {
-    const { token, kycManager, whitelister, admin, user1, user2 } = await loadFixture(
-      deployPermissionedToken
-    );
+    const { token, kycManager, whitelister, admin, user1, user2 } =
+      await loadFixture(deployPermissionedToken);
     await kycManager.connect(whitelister).grantKyc(user1.address);
     await token.connect(admin).mint(user1.address, ethers.parseUnits('100', 18));
     await expect(token.connect(user1).transfer(user2.address, 1n))
@@ -1010,9 +1006,8 @@ describe('Token KYC gating', () => {
   });
 
   it('permissioned mode: burn from non-KYC address reverts', async () => {
-    const { token, kycManager, whitelister, admin, user1 } = await loadFixture(
-      deployPermissionedToken
-    );
+    const { token, kycManager, whitelister, admin, user1 } =
+      await loadFixture(deployPermissionedToken);
     await kycManager.connect(whitelister).grantKyc(user1.address);
     await token.connect(admin).mint(user1.address, ethers.parseUnits('100', 18));
     await kycManager.connect(whitelister).revokeKyc(user1.address);
@@ -1022,9 +1017,8 @@ describe('Token KYC gating', () => {
   });
 
   it('ban check fires before KYC check (preserves existing order)', async () => {
-    const { token, kycManager, whitelister, admin, user1, user2 } = await loadFixture(
-      deployPermissionedToken
-    );
+    const { token, kycManager, whitelister, admin, user1, user2 } =
+      await loadFixture(deployPermissionedToken);
     await kycManager.connect(whitelister).grantKycBulk([user1.address, user2.address]);
     await token.connect(admin).mint(user1.address, ethers.parseUnits('100', 18));
 
@@ -1042,8 +1036,9 @@ describe('Token KYC gating', () => {
   it('setKycManager: only DEFAULT_ADMIN_ROLE; emits KycManagerUpdated; accepts zero', async () => {
     const { token, admin, user1 } = await loadFixture(deployPermissionedToken);
 
-    await expect(token.connect(user1).setKycManager(ethers.ZeroAddress))
-      .to.be.revertedWithCustomError(token, 'AccessControlUnauthorizedAccount');
+    await expect(
+      token.connect(user1).setKycManager(ethers.ZeroAddress)
+    ).to.be.revertedWithCustomError(token, 'AccessControlUnauthorizedAccount');
 
     const oldManager = await token.kycManager();
     await expect(token.connect(admin).setKycManager(ethers.ZeroAddress))

@@ -1183,11 +1183,11 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
                 address receiver,
                 uint256 tokenAmount,
                 uint256 shareAmount, // redeemAssetAmt
+                ,
+                ,
+                ,
                 // feeAssetAmt
                 // requestTimestamp
-                ,
-                ,
-                ,
                 bytes32 id
             ) = _decodeRedeemData(data);
 
@@ -1269,9 +1269,9 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
                 address receiver,
                 uint256 tokenAmount,
                 uint256 shareAmount, // redeemAssetAmt
+                ,
+                ,
                 // feeAssetAmt
-                ,
-                ,
                 uint256 requestTimestamp,
                 bytes32 oldId
             ) = _decodeRedeemData(data);

@@ -119,9 +119,9 @@ describe('KycManager', () => {
     it('reverts the whole grantKycBulk batch on a duplicate', async () => {
       const { kycManager, whitelister, user1, user2 } = await loadFixture(deployKycManager);
       await kycManager.connect(whitelister).grantKyc(user1.address);
-      await expect(
-        kycManager.connect(whitelister).grantKycBulk([user2.address, user1.address])
-      ).to.be.revertedWithCustomError(kycManager, 'AlreadyKyced').withArgs(user1.address);
+      await expect(kycManager.connect(whitelister).grantKycBulk([user2.address, user1.address]))
+        .to.be.revertedWithCustomError(kycManager, 'AlreadyKyced')
+        .withArgs(user1.address);
       // user2 should NOT have been granted (whole batch reverted)
       expect(await kycManager.isKyced(user2.address)).to.equal(false);
     });
@@ -148,8 +148,8 @@ describe('KycManager', () => {
         kycManager.connect(outsider).upgradeToAndCall(await newImpl.getAddress(), '0x')
       ).to.be.revertedWithCustomError(kycManager, 'AccessControlUnauthorizedAccount');
 
-      await expect(kycManager.connect(admin).upgradeToAndCall(await newImpl.getAddress(), '0x'))
-        .to.not.be.reverted;
+      await expect(kycManager.connect(admin).upgradeToAndCall(await newImpl.getAddress(), '0x')).to
+        .not.be.reverted;
     });
   });
 });

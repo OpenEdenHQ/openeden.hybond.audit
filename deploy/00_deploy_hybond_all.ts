@@ -268,10 +268,11 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
       await grantWhitelistTx.wait();
       console.log('✅ WHITELIST_ROLE granted to deployer on KycManager');
 
-      console.log('📌 KYC-listing the Express contract address (required for token flows)...');
-      const kycExpressTx = await kycManager.grantKyc(expressAddress);
-      await kycExpressTx.wait();
-      console.log('✅ Express contract KYC-listed on KycManager');
+      console.log('📌 KYC-listing required system wallets (Express, treasury, txFeeTo, mgtFeeTo)...');
+      const systemWallets = Array.from(new Set([expressAddress, treasury, txFeeTo, mgtFeeTo]));
+      const kycSystemTx = await kycManager.grantKycBulk(systemWallets);
+      await kycSystemTx.wait();
+      console.log('✅ System wallets KYC-listed on KycManager:', systemWallets);
     }
   } else {
     console.log(
@@ -279,7 +280,7 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
     );
     if (tokenPermissioned) {
       console.log(
-        '⚠️  In permissioned-Token mode: admin MUST grant WHITELIST_ROLE on KycManager + call kycManager.grantKyc(express) before any token flow.'
+        '⚠️  In permissioned-Token mode: admin MUST grant WHITELIST_ROLE on KycManager and KYC-list all system wallets (Express, treasury, txFeeTo, mgtFeeTo) before any token flow. Missing mgtFeeTo KYC will brick updateEpoch on first fee mint.'
       );
     }
   }

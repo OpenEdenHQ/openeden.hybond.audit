@@ -41,7 +41,9 @@ contract KycManager is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
         uint256 length = accounts.length;
         for (uint256 i; i < length; ) {
             _grantKyc(accounts[i]);
-            unchecked { ++i; }
+            unchecked {
+                ++i;
+            }
         }
     }
 
@@ -49,7 +51,9 @@ contract KycManager is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
         uint256 length = accounts.length;
         for (uint256 i; i < length; ) {
             _revokeKyc(accounts[i]);
-            unchecked { ++i; }
+            unchecked {
+                ++i;
+            }
         }
     }
 
