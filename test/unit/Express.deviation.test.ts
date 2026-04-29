@@ -3,10 +3,10 @@ import { ethers } from 'hardhat';
 import { loadFixture, time } from '@nomicfoundation/hardhat-network-helpers';
 import { deployExpressContracts } from '../fixtures/expressDeployments';
 
-const ONE = ethers.parseUnits('1', 18);
 const DEPOSIT_AMT = ethers.parseUnits('10000', 18);
 const REDEEM_AMT_USER1 = ethers.parseUnits('1000', 18);
 const REDEEM_AMT_USER2 = ethers.parseUnits('2000', 18);
+// strictly past convertRedeemRequestsDelay
 const TWO_DAYS = 2 * 24 * 60 * 60 + 1;
 
 describe('Express - Deviation Guards', function () {
@@ -77,8 +77,14 @@ describe('Express - Deviation Guards', function () {
 
     it('reverts when caller lacks MAINTAINER_ROLE', async function () {
       const { express, user1 } = await loadFixture(deployFixture);
-      await expect(express.connect(user1).updateDepositMaxDeviationBps(100)).to.be.reverted;
-      await expect(express.connect(user1).updateRedeemMaxDeviationBps(100)).to.be.reverted;
+      await expect(express.connect(user1).updateDepositMaxDeviationBps(100)).to.be.revertedWithCustomError(
+        express,
+        'AccessControlUnauthorizedAccount'
+      );
+      await expect(express.connect(user1).updateRedeemMaxDeviationBps(100)).to.be.revertedWithCustomError(
+        express,
+        'AccessControlUnauthorizedAccount'
+      );
     });
 
     it('bps == 0 is allowed (strict equality)', async function () {
@@ -134,6 +140,25 @@ describe('Express - Deviation Guards', function () {
       const { express, operator } = await loadFixture(deployWithPendingRedeemsBps100);
       const expected = REDEEM_AMT_USER1 + REDEEM_AMT_USER2;
       const totalAsset = expected - (expected * 200n) / 10000n; // -2%
+      await expect(express.connect(operator).processPendingRedeems(2, totalAsset)).to.be.revertedWithCustomError(
+        express,
+        'OracleDeviationExceeded'
+      );
+    });
+
+    it('exact-edge band: drift == bps boundary succeeds (inclusive)', async function () {
+      const { express, operator } = await loadFixture(deployWithPendingRedeemsBps100);
+      const expected = REDEEM_AMT_USER1 + REDEEM_AMT_USER2;
+      // Exactly +1% drift (100 bps band, 100 bps drift) — inclusive boundary
+      const totalAsset = expected + (expected * 100n) / 10000n;
+      await expect(express.connect(operator).processPendingRedeems(2, totalAsset)).to.not.be.reverted;
+    });
+
+    it('exact-edge band: drift == bps + 1 wei reverts', async function () {
+      const { express, operator } = await loadFixture(deployWithPendingRedeemsBps100);
+      const expected = REDEEM_AMT_USER1 + REDEEM_AMT_USER2;
+      // Exactly +1% drift, then +1 wei → strictly outside
+      const totalAsset = expected + (expected * 100n) / 10000n + 1n;
       await expect(express.connect(operator).processPendingRedeems(2, totalAsset)).to.be.revertedWithCustomError(
         express,
         'OracleDeviationExceeded'
@@ -202,6 +227,35 @@ describe('Express - Deviation Guards', function () {
   });
 
   describe('processDepositQueue - deviation', function () {
+    it('happy path: _newShares == oracleShares succeeds and tokens minted', async function () {
+      const { express, oem, usdo, user1, maintainer } = await loadFixture(deployFixture);
+      await express.connect(maintainer).updateDepositMaxDeviationBps(100);
+      await express.connect(user1).requestDeposit(await usdo.getAddress(), DEPOSIT_AMT, user1.address);
+
+      const balanceBefore = await oem.balanceOf(user1.address);
+      await express.connect(maintainer).processDepositQueue(1, DEPOSIT_AMT);
+      const balanceAfter = await oem.balanceOf(user1.address);
+
+      expect(balanceAfter - balanceBefore).to.equal(DEPOSIT_AMT);
+    });
+
+    it('bps == 0: 1 wei drift reverts', async function () {
+      const { express, usdo, user1, maintainer } = await loadFixture(deployFixture);
+      await express.connect(maintainer).updateDepositMaxDeviationBps(0);
+      await express.connect(user1).requestDeposit(await usdo.getAddress(), DEPOSIT_AMT, user1.address);
+      await expect(express.connect(maintainer).processDepositQueue(1, DEPOSIT_AMT + 1n)).to.be.revertedWithCustomError(
+        express,
+        'OracleDeviationExceeded'
+      );
+    });
+
+    it('bps == 0: exact match succeeds', async function () {
+      const { express, usdo, user1, maintainer } = await loadFixture(deployFixture);
+      await express.connect(maintainer).updateDepositMaxDeviationBps(0);
+      await express.connect(user1).requestDeposit(await usdo.getAddress(), DEPOSIT_AMT, user1.address);
+      await expect(express.connect(maintainer).processDepositQueue(1, DEPOSIT_AMT)).to.not.be.reverted;
+    });
+
     it('within +1% band succeeds (was previously rejected as too-low _newShares)', async function () {
       const { express, usdo, user1, maintainer } = await loadFixture(deployFixture);
       await express.connect(maintainer).updateDepositMaxDeviationBps(100);
@@ -235,6 +289,25 @@ describe('Express - Deviation Guards', function () {
       await express.connect(maintainer).updateDepositMaxDeviationBps(100);
       await express.connect(user1).requestDeposit(await usdo.getAddress(), DEPOSIT_AMT, user1.address);
       const newShares = DEPOSIT_AMT - (DEPOSIT_AMT * 200n) / 10000n;
+      await expect(express.connect(maintainer).processDepositQueue(1, newShares)).to.be.revertedWithCustomError(
+        express,
+        'OracleDeviationExceeded'
+      );
+    });
+
+    it('exact-edge band: drift == bps boundary succeeds (inclusive)', async function () {
+      const { express, usdo, user1, maintainer } = await loadFixture(deployFixture);
+      await express.connect(maintainer).updateDepositMaxDeviationBps(100);
+      await express.connect(user1).requestDeposit(await usdo.getAddress(), DEPOSIT_AMT, user1.address);
+      const newShares = DEPOSIT_AMT + (DEPOSIT_AMT * 100n) / 10000n;
+      await expect(express.connect(maintainer).processDepositQueue(1, newShares)).to.not.be.reverted;
+    });
+
+    it('exact-edge band: drift == bps + 1 wei reverts', async function () {
+      const { express, usdo, user1, maintainer } = await loadFixture(deployFixture);
+      await express.connect(maintainer).updateDepositMaxDeviationBps(100);
+      await express.connect(user1).requestDeposit(await usdo.getAddress(), DEPOSIT_AMT, user1.address);
+      const newShares = DEPOSIT_AMT + (DEPOSIT_AMT * 100n) / 10000n + 1n;
       await expect(express.connect(maintainer).processDepositQueue(1, newShares)).to.be.revertedWithCustomError(
         express,
         'OracleDeviationExceeded'
