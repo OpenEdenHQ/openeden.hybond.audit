@@ -213,8 +213,8 @@ describe('Express - Ratio Invariance', function () {
     });
   });
 
-  describe('InsufficientSettlementFunds revert', function () {
-    it('reverts when oracle-derived total exceeds _totalAsset', async function () {
+  describe('OracleDeviationExceeded revert', function () {
+    it('reverts when _totalAsset is far outside the deviation band', async function () {
       const fixture = await loadFixture(deployWithDeposit);
       const { express, user1, operator, maintainer } = fixture;
 
