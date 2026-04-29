@@ -394,7 +394,9 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
       // Ratio is invariant after processDepositQueue
       expect(await express.sharesPerToken()).to.equal(ratioBefore);
 
-      await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+      await express
+        .connect(operator)
+        .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
 
       expect(await express.getRedeemQueueLength()).to.equal(1n);
     });
@@ -495,7 +497,9 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
       const { express, operator } = await loadFixture(deployFixture);
 
       await expect(
-        express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1))
+        express
+          .connect(operator)
+          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1))
       ).to.be.revertedWithCustomError(express, 'NoPendingRedeemsReady');
     });
 
@@ -528,7 +532,9 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
       await express.connect(operator).updateEpoch();
 
       // Step 3: processPendingRedeems
-      await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+      await express
+        .connect(operator)
+        .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
 
       // Step 4: processRedeemQueue
       const user1UsdcBefore = await fixture.usdo.balanceOf(fixture.user1.address);

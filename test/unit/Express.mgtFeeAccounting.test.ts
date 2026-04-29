@@ -70,7 +70,9 @@ describe('Express - Management Fee Accounting (spreadsheet simulation)', functio
     const ratioBeforePending = await express.sharesPerToken();
 
     // Process pending -> final queue.
-    await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+    await express
+      .connect(operator)
+      .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
 
     // Ratio unchanged after pending->final (invariance)
     expect(await express.sharesPerToken()).to.equal(ratioBeforePending);

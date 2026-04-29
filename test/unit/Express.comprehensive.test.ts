@@ -115,9 +115,8 @@ describe('Express - Comprehensive Tests', function () {
         expect(await oem.balanceOf(user3.address)).to.be.gt(0);
       });
       it('should re-validate KYC during processing', async function () {
-        const { express, usdo, user1, maintainer, whitelister, kycManager } = await loadFixture(
-          deployFixture
-        );
+        const { express, usdo, user1, maintainer, whitelister, kycManager } =
+          await loadFixture(deployFixture);
         const amount = ethers.parseUnits('1000', 18);
         // Add deposit request
         await express.connect(user1).requestDeposit(await usdo.getAddress(), amount, user1.address);
@@ -335,10 +334,11 @@ describe('Express - Comprehensive Tests', function () {
         const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(withdrawDelay);
         // Should now be able to process
-        await expect(express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1))).to.emit(
-          express,
-          'ProcessPendingRedeem'
-        );
+        await expect(
+          express
+            .connect(operator)
+            .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1))
+        ).to.emit(express, 'ProcessPendingRedeem');
       });
       it('should use the ratio at requestRedeem time for redeem asset calculation', async function () {
         const fixture = await loadFixture(deployFixture);
@@ -358,7 +358,9 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(user1).requestRedeem(user1.address, redeemAmount);
         const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(withdrawDelay);
-        await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+        await express
+          .connect(operator)
+          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
         // getRedeemQueueInfo returns: (sender, receiver, tokenAmount, shareAmount, redeemAssetAmt, feeAssetAmt, requestTimestamp, id)
         const [, , tokenAmount, , redeemAssetAmt] = await express.getRedeemQueueInfo(0);
         expect(tokenAmount).to.equal(redeemAmount);
@@ -378,7 +380,9 @@ describe('Express - Comprehensive Tests', function () {
         const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(withdrawDelay);
         // Process to withdraw queue
-        await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+        await express
+          .connect(operator)
+          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
         // Check withdraw queue has correct timestamp
         // getRedeemQueueInfo: (sender, receiver, tokenAmount, shareAmount, redeemAssetAmt, feeAssetAmt, requestTimestamp, id)
         const [, , , , , , timestamp] = await express.getRedeemQueueInfo(0);
@@ -435,7 +439,9 @@ describe('Express - Comprehensive Tests', function () {
         // Fast forward and process to final queue
         const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(withdrawDelay);
-        await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+        await express
+          .connect(operator)
+          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
         return { ...fixture, redeemAmount };
       }
       it('should burn tokens on final withdraw', async function () {
@@ -499,7 +505,12 @@ describe('Express - Comprehensive Tests', function () {
         const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(withdrawDelay);
         const queueLen: bigint = await express.getPendingRedeemQueueLength();
-        await express.connect(operator).processPendingRedeems(queueLen, await expectedRedeemAssetTotal(express, Number(queueLen))); // Process all
+        await express
+          .connect(operator)
+          .processPendingRedeems(
+            queueLen,
+            await expectedRedeemAssetTotal(express, Number(queueLen))
+          ); // Process all
         // Remove liquidity from Express
         const expressUsdo = await usdo.balanceOf(await express.getAddress());
         // Leave enough for one withdraw (1000 USDO), burn the rest
@@ -544,7 +555,12 @@ describe('Express - Comprehensive Tests', function () {
         const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(withdrawDelay);
         const queueLen: bigint = await express.getPendingRedeemQueueLength();
-        await express.connect(operator).processPendingRedeems(queueLen, await expectedRedeemAssetTotal(express, Number(queueLen)));
+        await express
+          .connect(operator)
+          .processPendingRedeems(
+            queueLen,
+            await expectedRedeemAssetTotal(express, Number(queueLen))
+          );
         return { ...fixture, redeemAmount, originalTimestamps: timestamps };
       }
       it('should revert withdraws from final queue to pending queue', async function () {
@@ -605,7 +621,12 @@ describe('Express - Comprehensive Tests', function () {
         // Should be able to process immediately
         const queueLen: bigint = await express.getPendingRedeemQueueLength();
         await expect(
-          express.connect(operator).processPendingRedeems(queueLen, await expectedRedeemAssetTotal(express, Number(queueLen)))
+          express
+            .connect(operator)
+            .processPendingRedeems(
+              queueLen,
+              await expectedRedeemAssetTotal(express, Number(queueLen))
+            )
         ).to.emit(express, 'ProcessPendingRedeem');
         // All should be back in withdraw queue
         const withdrawQueueLength = await express.getRedeemQueueLength();
@@ -667,7 +688,9 @@ describe('Express - Comprehensive Tests', function () {
         // Move to final redeem queue
         const redeemDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(redeemDelay);
-        await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+        await express
+          .connect(operator)
+          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
         // Ban user1
         const BANLIST_ROLE = await oem.BANLIST_ROLE();
         await oem.connect(admin).grantRole(BANLIST_ROLE, admin.address);
@@ -938,7 +961,9 @@ describe('Express - Comprehensive Tests', function () {
       // Move to final withdraw queue
       const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
       await time.increase(withdrawDelay);
-      await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+      await express
+        .connect(operator)
+        .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
       const circulating = await express.circulatingSupply();
       const totalSupply = await oem.totalSupply();
       const mgtFeeTo = await express.mgtFeeTo();
@@ -960,7 +985,9 @@ describe('Express - Comprehensive Tests', function () {
       await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
       const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
       await time.increase(withdrawDelay);
-      await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+      await express
+        .connect(operator)
+        .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
       await express.connect(operator).processRedeemQueue(1);
       // After processing, tokens are burned - totalSupply decreases
       const totalSupplyAfter = await oem.totalSupply();
@@ -986,7 +1013,9 @@ describe('Express - Comprehensive Tests', function () {
       await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
       const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
       await time.increase(withdrawDelay);
-      await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+      await express
+        .connect(operator)
+        .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
       // Cancel from withdraw queue
       await express.connect(maintainer).cancelRedeem(1);
       const circulatingAfter = await express.circulatingSupply();
@@ -1011,7 +1040,9 @@ describe('Express - Comprehensive Tests', function () {
       expect(circulatingAfterRequest).to.equal(circulatingBefore - withdrawAmount);
       const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
       await time.increase(withdrawDelay);
-      await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+      await express
+        .connect(operator)
+        .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
       // Circulating unchanged after pending->final
       expect(await express.circulatingSupply()).to.equal(circulatingAfterRequest);
       // Revert back to pending — no accounting changes
@@ -1052,7 +1083,9 @@ describe('Express - Comprehensive Tests', function () {
       const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
       await time.increase(withdrawDelay);
       const queueLen: bigint = await express.getPendingRedeemQueueLength();
-      await express.connect(operator).processPendingRedeems(queueLen, await expectedRedeemAssetTotal(express, Number(queueLen)));
+      await express
+        .connect(operator)
+        .processPendingRedeems(queueLen, await expectedRedeemAssetTotal(express, Number(queueLen)));
       expect(await express.totalRedeemQueueTokens()).to.equal(w1 + w2 + w3);
       // Process first one
       await express.connect(operator).processRedeemQueue(1);
@@ -1114,7 +1147,9 @@ describe('Express - Comprehensive Tests', function () {
       await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
       const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
       await time.increase(withdrawDelay);
-      await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+      await express
+        .connect(operator)
+        .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
       const ratioAfter = await express.sharesPerToken();
       // Ratio is invariant — offchainShares decremented proportionally at requestRedeem time
       expect(ratioAfter).to.equal(ratioBefore);
@@ -1139,7 +1174,9 @@ describe('Express - Comprehensive Tests', function () {
       await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
       const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
       await time.increase(withdrawDelay);
-      await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+      await express
+        .connect(operator)
+        .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
       const ratioAfter = await express.sharesPerToken();
       // Ratio is invariant — offchainShares decremented proportionally at requestRedeem time
       expect(ratioAfter).to.equal(ratioBefore);
@@ -1157,7 +1194,9 @@ describe('Express - Comprehensive Tests', function () {
       await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
       const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
       await time.increase(withdrawDelay);
-      await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+      await express
+        .connect(operator)
+        .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
       const totalSupply = await oem.totalSupply();
       const totalRedeemQueueTokens = await express.totalRedeemQueueTokens();
       const denom = totalSupply - totalRedeemQueueTokens;
@@ -1180,7 +1219,9 @@ describe('Express - Comprehensive Tests', function () {
       await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
       const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
       await time.increase(withdrawDelay);
-      await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+      await express
+        .connect(operator)
+        .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
       await express.connect(operator).processRedeemQueue(1);
       // After burn, ratio is invariant — offchainShares was decremented at requestRedeem time
       expect(await express.sharesPerToken()).to.equal(ethers.parseUnits('1', 18));
@@ -1219,7 +1260,9 @@ describe('Express - Comprehensive Tests', function () {
       await express.connect(user1).requestRedeem(user1.address, withdrawAmount);
       const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
       await time.increase(withdrawDelay);
-      await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+      await express
+        .connect(operator)
+        .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
       const offchainShares = await express.offchainShares();
       const timeBuffer = await express.timeBuffer();
       await time.increase(timeBuffer);
@@ -1502,7 +1545,9 @@ describe('Express - Comprehensive Tests', function () {
         const fixture = await loadFixture(deployFixture);
         const { express, operator } = await setupWithdrawFixture(fixture);
         // trimDecimals is 3 from fixture
-        await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+        await express
+          .connect(operator)
+          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
         const [, , , , withdrawAssetAmt] = await express.getRedeemQueueInfo(0);
         // Last 15 digits should be zero
         expect(withdrawAssetAmt % 10n ** 15n).to.equal(0);
@@ -1511,7 +1556,9 @@ describe('Express - Comprehensive Tests', function () {
         const fixture = await loadFixture(deployFixture);
         await fixture.express.connect(fixture.maintainer).updateTrimDecimals(6);
         const { express, operator } = await setupWithdrawFixture(fixture);
-        await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+        await express
+          .connect(operator)
+          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
         const [, , , , withdrawAssetAmt] = await express.getRedeemQueueInfo(0);
         // Last 12 digits should be zero
         expect(withdrawAssetAmt % 10n ** 12n).to.equal(0);
@@ -1520,7 +1567,9 @@ describe('Express - Comprehensive Tests', function () {
         const fixture = await loadFixture(deployFixture);
         await fixture.express.connect(fixture.maintainer).updateTrimDecimals(0);
         const { express, operator, withdrawAmount } = await setupWithdrawFixture(fixture);
-        await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+        await express
+          .connect(operator)
+          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
         const [, , , , withdrawAssetAmt] = await express.getRedeemQueueInfo(0);
         // With 1:1 price and no fee, should equal the full withdraw amount
         expect(withdrawAssetAmt).to.equal(withdrawAmount);
@@ -1604,7 +1653,9 @@ describe('Express - Comprehensive Tests', function () {
         const delay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(delay + 1n);
         // Process pending redeems into final redeem queue
-        await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+        await express
+          .connect(operator)
+          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
         expect(await express.getRedeemQueueLength()).to.be.gt(0);
         await expect(
           express.connect(maintainer).updateRedeemAsset(await newAsset.getAddress())
@@ -1626,7 +1677,9 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(user1).requestRedeem(user1.address, redeemAmount);
         const delay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(delay + 1n);
-        await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+        await express
+          .connect(operator)
+          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
         await express.connect(operator).processRedeemQueue(1);
         // All queues should now be empty
         expect(await express.getDepositQueueLength()).to.equal(0);
@@ -1658,7 +1711,9 @@ describe('Express - Comprehensive Tests', function () {
         // Cancel redeem — refund should go to escrow since user1 is banned
         const delay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(delay + 1n);
-        await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+        await express
+          .connect(operator)
+          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
         await express.connect(maintainer).cancelRedeem(1);
         const escrowBalance = await express.redeemEscrowBalance(user1.address);
         expect(escrowBalance).to.be.gt(0);
@@ -1739,7 +1794,9 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(user1).requestRedeem(user1.address, redeemAmount);
         const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(withdrawDelay);
-        await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+        await express
+          .connect(operator)
+          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
         const [, , , , redeemAssetAmt] = await express.getRedeemQueueInfo(0);
         expect(redeemAssetAmt).to.equal(trim(redeemAmount, TRIM_DECIMALS));
       });
@@ -1754,7 +1811,9 @@ describe('Express - Comprehensive Tests', function () {
         // Process immediately after delay (no intervening updateEpoch/deposits/cancels)
         const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(withdrawDelay);
-        await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+        await express
+          .connect(operator)
+          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
         const [, , , , redeemAssetAmt, feeAssetAmt] = await express.getRedeemQueueInfo(0);
         expect(redeemAssetAmt).to.equal(previewGross);
         expect(feeAssetAmt).to.equal(previewFee);
@@ -1769,7 +1828,9 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(user1).requestRedeem(user1.address, redeemAmount);
         const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(withdrawDelay);
-        await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+        await express
+          .connect(operator)
+          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
         // redeemAssetAmt should be less than redeemAmount due to dilution
         const [, , , , redeemAssetAmt] = await express.getRedeemQueueInfo(0);
         expect(redeemAssetAmt).to.be.lt(redeemAmount);
@@ -1795,7 +1856,9 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(user1).requestRedeem(user1.address, redeemAmount);
         const redeemDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(redeemDelay);
-        await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+        await express
+          .connect(operator)
+          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
         const [, , queuedShareAmount, , redeemAssetAmt] = await express.getRedeemQueueInfo(0);
         expect(queuedShareAmount).to.equal(redeemAmount);
         expect(redeemAssetAmt).to.equal(expectedRedeemAssetAmt);
@@ -1809,7 +1872,9 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(user1).requestRedeem(user1.address, redeemAmount);
         const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(withdrawDelay);
-        await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+        await express
+          .connect(operator)
+          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
         const [, , , , redeemAssetAmtFirst] = await express.getRedeemQueueInfo(0);
         // Revert to pending
         await express.connect(operator).revertRedeemToPending(0);
@@ -1818,7 +1883,9 @@ describe('Express - Comprehensive Tests', function () {
         await time.increase(timeBuffer);
         await express.connect(operator).updateEpoch();
         // Reprocess — ratio should be recalculated from current state
-        await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+        await express
+          .connect(operator)
+          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
         const [, , , , redeemAssetAmtSecond] = await express.getRedeemQueueInfo(0);
         // Second processing should use a lower ratio (more dilution)
         expect(redeemAssetAmtSecond).to.be.lte(redeemAssetAmtFirst);
@@ -1866,7 +1933,9 @@ describe('Express - Comprehensive Tests', function () {
         await express.connect(user1).requestRedeem(user1.address, redeemAmount);
         const redeemDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(redeemDelay);
-        await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+        await express
+          .connect(operator)
+          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
         const userBalanceBeforeCancel = await oem.balanceOf(user1.address);
         expect(await express.redeemInfo(user1.address)).to.equal(redeemAmount);
         expect(await express.totalRedeemQueueTokens()).to.equal(redeemAmount);
@@ -1898,7 +1967,9 @@ describe('Express - Comprehensive Tests', function () {
         expect(ratioAfterDeposit).to.be.closeTo(ratioBeforeDeposit, ethers.parseUnits('1', 12));
         const redeemDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
         await time.increase(redeemDelay);
-        await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+        await express
+          .connect(operator)
+          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
         const [, , , , redeemAssetAmtAfterDeposit] = await express.getRedeemQueueInfo(0);
         // Redeem amount matches preview (within rounding tolerance from mulDiv)
         // The ratio was baked in at requestRedeem time, so deposits don't affect it

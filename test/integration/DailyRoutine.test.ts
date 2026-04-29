@@ -148,7 +148,9 @@ describe('Daily Routine — end-to-end integration', function () {
       const { express, operator } = ctx;
 
       await expect(
-        express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1))
+        express
+          .connect(operator)
+          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1))
       ).to.be.revertedWithCustomError(express, 'NoPendingRedeemsReady');
     });
 

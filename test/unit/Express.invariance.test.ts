@@ -162,7 +162,9 @@ describe('Express - Ratio Invariance', function () {
       await time.increase(2 * 24 * 60 * 60 + 1);
 
       // Process pending -> final (supply _totalAsset high enough to pass sanity check)
-      await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+      await express
+        .connect(operator)
+        .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
 
       // Ratio should still be same (pending->final doesn't change ratio-relevant state)
       expect(await express.sharesPerToken()).to.equal(ratioBefore);
@@ -203,7 +205,9 @@ describe('Express - Ratio Invariance', function () {
 
       await express.connect(user1).requestRedeem(user1.address, ethers.parseUnits('1000', 18));
       await time.increase(2 * 24 * 60 * 60 + 1);
-      await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+      await express
+        .connect(operator)
+        .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
 
       // Cancel from final queue
       await express.connect(maintainer).cancelRedeem(1);
