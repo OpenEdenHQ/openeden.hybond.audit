@@ -1,14 +1,13 @@
 import { expect } from 'chai';
 import { ethers } from 'hardhat';
 import { loadFixture, time } from '@nomicfoundation/hardhat-network-helpers';
-import { deployExpressContracts } from '../fixtures/expressDeployments';
+import { deployExpressContracts, expectedRedeemAssetTotal } from '../fixtures/expressDeployments';
 
 const ONE = ethers.parseUnits('1', 18);
 const DEPOSIT_A = ethers.parseUnits('10000', 18);
 const DEPOSIT_B = ethers.parseUnits('5000', 18);
 const DEPOSIT_C = ethers.parseUnits('2000', 18);
 const ONE_DAY = 24 * 60 * 60;
-const LARGE_TOTAL_ASSET = ethers.parseUnits('10000000', 18);
 
 describe('Daily Routine — end-to-end integration', function () {
   async function deployFixture() {
@@ -149,7 +148,7 @@ describe('Daily Routine — end-to-end integration', function () {
       const { express, operator } = ctx;
 
       await expect(
-        express.connect(operator).processPendingRedeems(1, LARGE_TOTAL_ASSET)
+        express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1))
       ).to.be.revertedWithCustomError(express, 'NoPendingRedeemsReady');
     });
 
@@ -192,10 +191,11 @@ describe('Daily Routine — end-to-end integration', function () {
       const { express, operator } = ctx;
 
       const len = await express.getPendingRedeemQueueLength();
-      await expect(express.connect(operator).processPendingRedeems(len, LARGE_TOTAL_ASSET)).to.emit(
-        express,
-        'ProcessPendingRedeem'
-      );
+      await expect(
+        express
+          .connect(operator)
+          .processPendingRedeems(len, await expectedRedeemAssetTotal(express, Number(len)))
+      ).to.emit(express, 'ProcessPendingRedeem');
 
       expect(await express.getPendingRedeemQueueLength()).to.equal(0n);
       expect(await express.getRedeemQueueLength()).to.equal(1n);

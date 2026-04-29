@@ -187,6 +187,9 @@ describe('Express - Offchain Shares', function () {
       const { express, usdo, user1, maintainer, admin } = await loadFixture(deployFixture);
       await deployAndAttachPriceOracle(express, maintainer, admin);
 
+      // Strict equality: any drift triggers OracleDeviationExceeded
+      await express.connect(maintainer).updateDepositMaxDeviationBps(0);
+
       const depositAmt = ethers.parseUnits('5000', 18);
       await express
         .connect(user1)
@@ -194,8 +197,8 @@ describe('Express - Offchain Shares', function () {
 
       const expectedMinShares = ethers.parseUnits('2500', 18);
       await expect(express.connect(maintainer).processDepositQueue(1, expectedMinShares - 1n))
-        .to.be.revertedWithCustomError(express, 'InsufficientSettlementFunds')
-        .withArgs(expectedMinShares, expectedMinShares - 1n);
+        .to.be.revertedWithCustomError(express, 'OracleDeviationExceeded')
+        .withArgs(expectedMinShares - 1n, expectedMinShares, 0);
     });
 
     it('allows processing when _newShares equals the oracle-implied minimum', async function () {

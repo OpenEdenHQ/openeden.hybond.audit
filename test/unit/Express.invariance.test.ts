@@ -1,10 +1,9 @@
 import { expect } from 'chai';
 import { ethers } from 'hardhat';
 import { loadFixture, time } from '@nomicfoundation/hardhat-network-helpers';
-import { deployExpressContracts } from '../fixtures/expressDeployments';
+import { deployExpressContracts, expectedRedeemAssetTotal } from '../fixtures/expressDeployments';
 
 const ONE = ethers.parseUnits('1', 18);
-const LARGE_TOTAL_ASSET = ethers.parseUnits('10000000', 18);
 
 describe('Express - Ratio Invariance', function () {
   async function deployFixture() {
@@ -163,7 +162,7 @@ describe('Express - Ratio Invariance', function () {
       await time.increase(2 * 24 * 60 * 60 + 1);
 
       // Process pending -> final (supply _totalAsset high enough to pass sanity check)
-      await express.connect(operator).processPendingRedeems(1, LARGE_TOTAL_ASSET);
+      await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
 
       // Ratio should still be same (pending->final doesn't change ratio-relevant state)
       expect(await express.sharesPerToken()).to.equal(ratioBefore);
@@ -204,7 +203,7 @@ describe('Express - Ratio Invariance', function () {
 
       await express.connect(user1).requestRedeem(user1.address, ethers.parseUnits('1000', 18));
       await time.increase(2 * 24 * 60 * 60 + 1);
-      await express.connect(operator).processPendingRedeems(1, LARGE_TOTAL_ASSET);
+      await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
 
       // Cancel from final queue
       await express.connect(maintainer).cancelRedeem(1);

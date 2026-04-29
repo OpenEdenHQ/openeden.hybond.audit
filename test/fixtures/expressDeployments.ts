@@ -148,6 +148,12 @@ export async function deployExpressContracts(): Promise<ExpressDeployment> {
   await express.connect(maintainer).updateConvertRedeemRequestsDelay(2 * 24 * 60 * 60); // 2 days
   await express.connect(maintainer).updateTimeBuffer(72000); // 20 hours
 
+  // Permissive deviation tolerance for tests; specific tests that exercise deviation
+  // behavior override these. BPS_BASE (10000) means 100% tolerance — effectively
+  // disables the deviation guard for tests not concerned with it.
+  await express.connect(maintainer).updateDepositMaxDeviationBps(10000);
+  await express.connect(maintainer).updateRedeemMaxDeviationBps(10000);
+
   // Grant KYC to test users + Express itself (Token enforces KYC on _update; Express
   // is on both sides of mint/burn/transfer flows so it must be KYC'd too).
   await kycManager
@@ -179,6 +185,44 @@ export async function deployExpressContracts(): Promise<ExpressDeployment> {
     user2,
     user3,
   };
+}
+
+/**
+ * Compute the oracle-implied total redeem asset payout for the next `_len` pending
+ * redeem entries. Mirrors `processPendingRedeems`'s expected-total accumulation:
+ *   sum_i _redeemAssetAmount(shareAmount_i, oraclePrice)
+ * where _redeemAssetAmount = trim(shareAmount * price / 1e18, redeemAsset decimals).
+ *
+ * Pass the returned value as `_totalAsset` to keep the deviation check happy when
+ * a test only cares that processing succeeds (not the precise distribution amount).
+ */
+export async function expectedRedeemAssetTotal(express: any, len: number): Promise<bigint> {
+  const ONE_E18 = 10n ** 18n;
+  const oracleAddr: string = await express.priceOracle();
+  let price = ONE_E18;
+  if (oracleAddr !== ethers.ZeroAddress) {
+    price = await express.getPrice();
+  }
+  const trimDecimals: bigint = await express.trimDecimals();
+  const redeemAsset: string = await express.redeemAsset();
+  const ERC20 = await ethers.getContractAt('IERC20Metadata', redeemAsset);
+  const assetDecimals: bigint = BigInt(await ERC20.decimals());
+
+  let total = 0n;
+  for (let i = 0; i < len; i++) {
+    const info = await express.getPendingRedeemQueueInfo(i);
+    const shareAmount: bigint = info[3];
+    const raw = (shareAmount * price) / ONE_E18;
+    const trimmed =
+      trimDecimals === 0n || trimDecimals >= assetDecimals
+        ? raw
+        : ((): bigint => {
+            const factor = 10n ** (assetDecimals - trimDecimals);
+            return (raw / factor) * factor;
+          })();
+    total += trimmed;
+  }
+  return total;
 }
 
 /**

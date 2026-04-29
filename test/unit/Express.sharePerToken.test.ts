@@ -1,10 +1,9 @@
 import { expect } from 'chai';
 import { ethers } from 'hardhat';
 import { loadFixture, time } from '@nomicfoundation/hardhat-network-helpers';
-import { deployExpressContracts } from '../fixtures/expressDeployments';
+import { deployExpressContracts, expectedRedeemAssetTotal } from '../fixtures/expressDeployments';
 
 const ONE = ethers.parseUnits('1', 18);
-const LARGE_TOTAL_ASSET = ethers.parseUnits('10000000', 18);
 
 describe('Express - SharePerToken & Queue Processing Order', function () {
   async function deployFixture() {
@@ -30,7 +29,10 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
     const { express, operator } = fixture;
     await time.increase(2n * 24n * 60n * 60n); // T+2 = 2 days
     const queueLen: bigint = await express.getPendingRedeemQueueLength();
-    await express.connect(operator).processPendingRedeems(len ?? queueLen, LARGE_TOTAL_ASSET);
+    const lenToUse = len ?? queueLen;
+    await express
+      .connect(operator)
+      .processPendingRedeems(lenToUse, await expectedRedeemAssetTotal(express, Number(lenToUse)));
   }
 
   // =========================================================================
@@ -392,7 +394,7 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
       // Ratio is invariant after processDepositQueue
       expect(await express.sharesPerToken()).to.equal(ratioBefore);
 
-      await express.connect(operator).processPendingRedeems(1, LARGE_TOTAL_ASSET);
+      await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
 
       expect(await express.getRedeemQueueLength()).to.equal(1n);
     });
@@ -481,7 +483,9 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
       await time.increase(delay);
 
       const queueLen: bigint = await express.getPendingRedeemQueueLength();
-      await express.connect(fixture.operator).processPendingRedeems(queueLen, LARGE_TOTAL_ASSET);
+      await express
+        .connect(fixture.operator)
+        .processPendingRedeems(queueLen, await expectedRedeemAssetTotal(express, Number(queueLen)));
 
       expect(await express.getPendingRedeemQueueLength()).to.equal(0n);
       expect(await express.getRedeemQueueLength()).to.equal(2n);
@@ -491,7 +495,7 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
       const { express, operator } = await loadFixture(deployFixture);
 
       await expect(
-        express.connect(operator).processPendingRedeems(1, LARGE_TOTAL_ASSET)
+        express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1))
       ).to.be.revertedWithCustomError(express, 'NoPendingRedeemsReady');
     });
 
@@ -524,7 +528,7 @@ describe('Express - SharePerToken & Queue Processing Order', function () {
       await express.connect(operator).updateEpoch();
 
       // Step 3: processPendingRedeems
-      await express.connect(operator).processPendingRedeems(1, LARGE_TOTAL_ASSET);
+      await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
 
       // Step 4: processRedeemQueue
       const user1UsdcBefore = await fixture.usdo.balanceOf(fixture.user1.address);

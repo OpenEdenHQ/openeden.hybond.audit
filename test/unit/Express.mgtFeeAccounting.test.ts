@@ -1,10 +1,9 @@
 import { expect } from 'chai';
 import { ethers } from 'hardhat';
 import { loadFixture, time } from '@nomicfoundation/hardhat-network-helpers';
-import { deployExpressContracts } from '../fixtures/expressDeployments';
+import { deployExpressContracts, expectedRedeemAssetTotal } from '../fixtures/expressDeployments';
 
 const ONE = ethers.parseUnits('1', 18);
-const LARGE_TOTAL_ASSET = ethers.parseUnits('10000000', 18);
 
 describe('Express - Management Fee Accounting (spreadsheet simulation)', function () {
   it('sharesPerToken and circulatingSupply behave correctly across fee accrual + fee redeem cycle', async function () {
@@ -71,7 +70,7 @@ describe('Express - Management Fee Accounting (spreadsheet simulation)', functio
     const ratioBeforePending = await express.sharesPerToken();
 
     // Process pending -> final queue.
-    await express.connect(operator).processPendingRedeems(1, LARGE_TOTAL_ASSET);
+    await express.connect(operator).processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
 
     // Ratio unchanged after pending->final (invariance)
     expect(await express.sharesPerToken()).to.equal(ratioBeforePending);
