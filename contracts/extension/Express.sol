@@ -97,7 +97,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     //    updateEpoch mints new fee shares to mgtFeeTo, and Token._update rejects mints
     //    to banned recipients, wedging fee accrual until unban.
     // 6. The mgtFeeTo wallet AND the receiver of any in-flight fee redeem must remain KYC-listed
-    //    through settlement. _processSinglePendingRedeem, processRedeemQueue, and requestRedeem
+    //    through settlement. processPendingRedeems, processRedeemQueue, and requestRedeem
     //    all re-check KYC, so de-KYCing mid-flow wedges the front of a queue until re-KYC or
     //    manual cancelPendingRedeem / cancelRedeem.
     // 7. Queue-time parameters are read live at processing time, not snapshotted at request time.
@@ -763,8 +763,10 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
             }
         }
 
-        uint256 oracleMinShares = Math.mulDiv(batchTotalNetAssets, 1e18, getPrice());
-        if (oracleMinShares > _newShares) revert InsufficientSettlementFunds(oracleMinShares, _newShares);
+        if (address(priceOracle) != address(0)) {
+            uint256 oracleShares = Math.mulDiv(batchTotalNetAssets, 1e18, getPrice());
+            _checkDeviation(_newShares, oracleShares, depositMaxDeviationBps);
+        }
 
         // Compute total tokens to mint (preserves ratio exactly)
         uint256 mintTotal = Math.mulDiv(_newShares, 1e18, currentRatio);
@@ -946,24 +948,57 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     //////////////////////////////////////////////////////////////*/
 
     /**
-     * @notice Process pending redeems (T+N discipline enforced by operator off-chain)
-     * @dev Uses shareAmount from queue entry (ratio baked in at requestRedeem time).
-     *      Operator must pass an explicit positive _len; _len = 0 makes the loop a no-op
-     *      and reverts with NoPendingRedeemsReady (process-all sentinel is not supported here).
-     * @param _len Number of pending requests to process (must be > 0)
-     * @param _totalAsset Actual redeem asset amount received from offchain share liquidation (sanity bound)
+     * @notice Process pending redeems with operator-supplied total asset distributed pro-rata
+     * @dev Two-pass: Pass 1 pops ready entries, validates KYC, sums shareAmounts, and (if oracle
+     *      configured) accumulates oracle-derived expected total. Then deviation-checks
+     *      _totalAsset against expectedTotal. Pass 2 distributes _totalAsset pro-rata by
+     *      shareAmount and computes per-entry fee on the operator-derived slice.
+     *
+     *      Stops at the first not-ready entry. If no entries are ready, reverts
+     *      NoPendingRedeemsReady. _totalAsset is interpreted relative to the entries actually
+     *      processed (not the requested _len).
+     * @param _len Number of pending requests to attempt (must be > 0)
+     * @param _totalAsset Operator-supplied actual redeem asset pool to distribute pro-rata
      */
     function processPendingRedeems(uint256 _len, uint256 _totalAsset) external onlyRole(OPERATOR_ROLE) {
-        uint256 processed;
-        uint256 currentPrice = getPrice();
-        uint256 runningTotal;
+        bool useOracle = address(priceOracle) != address(0);
+        uint256 oraclePrice = useOracle ? getPrice() : 0;
 
+        bytes[] memory entries = new bytes[](_len);
+        uint256[] memory shareAmounts = new uint256[](_len);
+        uint256 batchTotalShares;
+        uint256 expectedTotal;
+        uint256 processed;
+
+        // Pass 1: pop ready entries, validate KYC, accumulate
         while (processed < _len && !pendingRedeemQueue.empty()) {
-            (bool success, uint256 assetAmt) = _processSinglePendingRedeem(currentPrice);
-            if (!success) {
+            bytes memory data = pendingRedeemQueue.front();
+            (
+                address sender,
+                address receiver,
+                uint256 tokenAmount,
+                uint256 shareAmount,
+                uint256 requestTimestamp,
+
+            ) = _decodePendingRedeemData(data);
+
+            if (block.timestamp < requestTimestamp + convertRedeemRequestsDelay) {
                 break;
             }
-            runningTotal += assetAmt;
+
+            _validateKyc(sender, receiver);
+
+            pendingRedeemQueue.popFront();
+            pendingRedeemInfo[receiver] -= tokenAmount;
+
+            entries[processed] = data;
+            shareAmounts[processed] = shareAmount;
+            batchTotalShares += shareAmount;
+
+            if (useOracle) {
+                expectedTotal += _redeemAssetAmount(shareAmount, oraclePrice);
+            }
+
             unchecked {
                 ++processed;
             }
@@ -971,77 +1006,63 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
 
         if (processed == 0) revert NoPendingRedeemsReady();
 
-        // Sanity bound: oracle-derived total must not exceed operator-supplied actual
-        if (runningTotal > _totalAsset) revert InsufficientSettlementFunds(runningTotal, _totalAsset);
-    }
-
-    /**
-     * @notice Internal helper to process a single pending redeem
-     * @param currentPrice The current T+2 price to apply
-     * @return success True if redeem was processed, false if not ready yet
-     * @return redeemAssetAmt The oracle-derived redeemAsset amount for this entry
-     */
-    function _processSinglePendingRedeem(uint256 currentPrice) internal returns (bool success, uint256 redeemAssetAmt) {
-        bytes memory data = pendingRedeemQueue.front();
-        (
-            address sender,
-            address receiver,
-            uint256 tokenAmount,
-            uint256 shareAmount,
-            uint256 requestTimestamp,
-            bytes32 pendingId
-        ) = _decodePendingRedeemData(data);
-
-        // Check if convertRedeemRequestsDelay has elapsed
-        if (block.timestamp < requestTimestamp + convertRedeemRequestsDelay) {
-            return (false, 0);
+        // Deviation gate
+        if (useOracle) {
+            _checkDeviation(_totalAsset, expectedTotal, redeemMaxDeviationBps);
         }
 
-        _validateKyc(sender, receiver);
+        // Pass 2: distribute _totalAsset pro-rata by shareAmount
+        for (uint256 i = 0; i < processed; ) {
+            (
+                address sender,
+                address receiver,
+                uint256 tokenAmount,
+                uint256 shareAmount,
+                uint256 requestTimestamp,
+                bytes32 pendingId
+            ) = _decodePendingRedeemData(entries[i]);
 
-        // Remove from pending queue
-        pendingRedeemQueue.popFront();
-        pendingRedeemInfo[receiver] -= tokenAmount;
+            uint256 redeemAssetAmt = _trimAsset(
+                Math.mulDiv(_totalAsset, shareAmounts[i], batchTotalShares),
+                redeemAsset
+            );
+            uint256 feeAssetAmt = txsFee(redeemAssetAmt, TxType.REDEEM);
 
-        // Price redeem proceeds using the shareAmount (ratio already baked in at request time)
-        redeemAssetAmt = _redeemAssetAmount(shareAmount, currentPrice);
+            bytes32 finalId = keccak256(
+                abi.encode(
+                    sender,
+                    receiver,
+                    tokenAmount,
+                    shareAmount,
+                    redeemAssetAmt,
+                    feeAssetAmt,
+                    requestTimestamp,
+                    block.timestamp,
+                    _nonce++
+                )
+            );
 
-        // Calculate fee in redeemAsset
-        uint256 feeAssetAmt = txsFee(redeemAssetAmt, TxType.REDEEM);
+            redeemQueue.pushBack(
+                abi.encode(
+                    sender,
+                    receiver,
+                    tokenAmount,
+                    shareAmount,
+                    redeemAssetAmt,
+                    feeAssetAmt,
+                    requestTimestamp,
+                    finalId
+                )
+            );
 
-        // Add to final redeem queue
-        bytes32 finalId = keccak256(
-            abi.encode(
-                sender,
-                receiver,
-                tokenAmount,
-                shareAmount,
-                redeemAssetAmt,
-                feeAssetAmt,
-                requestTimestamp,
-                block.timestamp,
-                _nonce++
-            )
-        );
+            redeemInfo[receiver] += tokenAmount;
 
-        redeemQueue.pushBack(
-            abi.encode(
-                sender,
-                receiver,
-                tokenAmount,
-                shareAmount,
-                redeemAssetAmt,
-                feeAssetAmt,
-                requestTimestamp,
-                finalId
-            )
-        );
+            emit ProcessPendingRedeem(sender, receiver, tokenAmount, oraclePrice, pendingId, finalId);
 
-        redeemInfo[receiver] += tokenAmount;
-
-        emit ProcessPendingRedeem(sender, receiver, tokenAmount, currentPrice, pendingId, finalId);
-
-        return (true, redeemAssetAmt);
+            unchecked {
+                ++i;
+            }
+        }
     }
 
     /**
