@@ -102,16 +102,27 @@ describe('Express - Deviation Guards', function () {
     it('happy path: _totalAsset == expectedTotal succeeds; payouts split pro-rata by shareAmount', async function () {
       const { express, operator } = await loadFixture(deployWithPendingRedeemsBps100);
 
-      // With ratio == 1e18 and price == 1e18, expectedTotal == REDEEM_AMT_USER1 + REDEEM_AMT_USER2
+      // With ratio == 1e18 and price == 1e18, shareAmount_i == REDEEM_AMT_USER{i}
+      // Pro-rata: payout_i == _totalAsset * shareAmount_i / batchTotalShares
+      // user1: 1000/3000 -> 1/3 of totalAsset; user2: 2000/3000 -> 2/3 of totalAsset
       const totalAsset = REDEEM_AMT_USER1 + REDEEM_AMT_USER2;
+      const batchTotalShares = REDEEM_AMT_USER1 + REDEEM_AMT_USER2;
+      const expectedUser1 = (totalAsset * REDEEM_AMT_USER1) / batchTotalShares;
+      const expectedUser2 = (totalAsset * REDEEM_AMT_USER2) / batchTotalShares;
+
       await express.connect(operator).processPendingRedeems(2, totalAsset);
 
-      // Both entries should now sit in redeemQueue with pro-rata redeemAssetAmt.
-      // User1 share = REDEEM_AMT_USER1 / total → 1/3 of totalAsset
-      // User2 share = REDEEM_AMT_USER2 / total → 2/3 of totalAsset
-      // Cannot easily inspect via storage; assert via event or final processRedeemQueue payout.
-      // Use redeemQueue length:
       expect(await express.getRedeemQueueLength()).to.equal(2);
+
+      // Decode entries and verify per-user pro-rata payouts.
+      // getRedeemQueueInfo: (sender, receiver, tokenAmount, shareAmount, redeemAssetAmt, feeAssetAmt, requestTimestamp, id)
+      const [, , , , redeemAssetAmt0] = await express.getRedeemQueueInfo(0);
+      const [, , , , redeemAssetAmt1] = await express.getRedeemQueueInfo(1);
+
+      expect(redeemAssetAmt0).to.equal(expectedUser1);
+      expect(redeemAssetAmt1).to.equal(expectedUser2);
+      // Sanity: 2:1 ratio between user2 and user1 payouts
+      expect(redeemAssetAmt1).to.equal(redeemAssetAmt0 * 2n);
     });
 
     it('within +1% band succeeds', async function () {
