@@ -216,15 +216,19 @@ describe('Express - Ratio Invariance', function () {
   describe('InsufficientSettlementFunds revert', function () {
     it('reverts when oracle-derived total exceeds _totalAsset', async function () {
       const fixture = await loadFixture(deployWithDeposit);
-      const { express, user1, operator } = fixture;
+      const { express, user1, operator, maintainer } = fixture;
+
+      // Set a non-zero deviation tolerance before any redeem queueing
+      // (setter requires queues to be empty)
+      await express.connect(maintainer).updateRedeemMaxDeviationBps(100); // 1%
 
       await express.connect(user1).requestRedeem(user1.address, ethers.parseUnits('1000', 18));
       await time.increase(2 * 24 * 60 * 60 + 1);
 
-      // Supply a tiny _totalAsset that the oracle-derived payout will exceed
+      // Supply a tiny _totalAsset that falls far outside the deviation band
       await expect(
         express.connect(operator).processPendingRedeems(1, 1n)
-      ).to.be.revertedWithCustomError(express, 'InsufficientSettlementFunds');
+      ).to.be.revertedWithCustomError(express, 'OracleDeviationExceeded');
     });
   });
 
