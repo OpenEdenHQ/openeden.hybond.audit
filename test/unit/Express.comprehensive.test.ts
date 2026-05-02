@@ -704,6 +704,45 @@ describe('Express - Comprehensive Tests', function () {
         // Escrow balance recorded
         expect(await express.redeemEscrowBalance(user1.address)).to.equal(redeemAmount);
       });
+      // WP-H1 regression: cancelPendingRedeem must route refund to escrow (not revert via
+      // Token's KYC gate) when the sender has been de-KYC'd between request and cancel.
+      it("should escrow tokens when cancelling pending redeem for de-KYC'd user", async function () {
+        const fixture = await loadFixture(deployFixture);
+        const { express, user1, oem, maintainer, kycManager, whitelister, redeemAmount } =
+          await setupPendingRedemption(fixture);
+        // Revoke KYC after the request lands in the queue
+        await kycManager.connect(whitelister).revokeKycBulk([user1.address]);
+        const userBalanceBefore = await oem.balanceOf(user1.address);
+        await expect(express.connect(maintainer).cancelPendingRedeem(1))
+          .to.emit(express, 'RedeemEscrowIn')
+          .withArgs(user1.address, redeemAmount);
+        expect(await oem.balanceOf(user1.address)).to.equal(userBalanceBefore);
+        expect(await express.redeemEscrowBalance(user1.address)).to.equal(redeemAmount);
+        expect(await express.getPendingRedeemQueueLength()).to.equal(0);
+        // Re-KYC + claim returns the escrowed tokens
+        await kycManager.connect(whitelister).grantKycBulk([user1.address]);
+        await express.connect(user1).claimRedeemEscrow(user1.address);
+        expect(await oem.balanceOf(user1.address)).to.equal(userBalanceBefore + redeemAmount);
+        expect(await express.redeemEscrowBalance(user1.address)).to.equal(0);
+      });
+      it("should escrow tokens when cancelling redeem for de-KYC'd user", async function () {
+        const fixture = await loadFixture(deployFixture);
+        const { express, user1, oem, maintainer, operator, kycManager, whitelister, redeemAmount } =
+          await setupPendingRedemption(fixture);
+        // Move to final redeem queue first (de-KYC after — tests the cancelRedeem path)
+        const redeemDelay = 2n * 24n * 60n * 60n;
+        await time.increase(redeemDelay);
+        await express
+          .connect(operator)
+          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
+        await kycManager.connect(whitelister).revokeKycBulk([user1.address]);
+        const userBalanceBefore = await oem.balanceOf(user1.address);
+        await expect(express.connect(maintainer).cancelRedeem(1))
+          .to.emit(express, 'RedeemEscrowIn')
+          .withArgs(user1.address, redeemAmount);
+        expect(await oem.balanceOf(user1.address)).to.equal(userBalanceBefore);
+        expect(await express.redeemEscrowBalance(user1.address)).to.equal(redeemAmount);
+      });
     });
     describe('Claim Escrow', function () {
       async function setupEscrowedUser(fixture: any) {
@@ -2089,6 +2128,8 @@ describe('Express - Comprehensive Tests', function () {
               firstDepositAmount: ethers.parseUnits('1000', 18),
             },
             ethers.ZeroAddress,
+            10000,
+            10000,
           ],
           { kind: 'uups', initializer: 'initialize' }
         )

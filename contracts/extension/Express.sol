@@ -99,7 +99,8 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     // 6. The mgtFeeTo wallet AND the receiver of any in-flight fee redeem must remain KYC-listed
     //    through settlement. processPendingRedeems, processRedeemQueue, and requestRedeem
     //    all re-check KYC, so de-KYCing mid-flow wedges the front of a queue until re-KYC or
-    //    manual cancelPendingRedeem / cancelRedeem.
+    //    manual cancelPendingRedeem / cancelRedeem (cancel routes refunds to redeemEscrowBalance
+    //    when the sender is banned or de-KYC'd; user reclaims via claimRedeemEscrow after re-KYC).
     // 7. Queue-time parameters are read live at processing time, not snapshotted at request time.
     //    Do NOT change convertRedeemRequestsDelay, redeemFeeRate, depositFeeRate, priceOracle,
     //    maxStalePeriod, trimDecimals, depositMaxDeviationBps, or redeemMaxDeviationBps while
@@ -344,6 +345,8 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
      * @param _maxStalePeriod Maximum staleness in seconds (e.g., 86400 for 24 hours)
      * @param cfg Deposit and redeem limiter configuration
      * @param _kycManager Address of the KYC manager (required, non-zero; shared with Token)
+     * @param _depositMaxDeviationBps Symmetric oracle deviation tolerance for processDepositQueue (BPS)
+     * @param _redeemMaxDeviationBps Symmetric oracle deviation tolerance for processPendingRedeems (BPS)
      */
     function initialize(
         address _token,
@@ -356,7 +359,9 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
         address _priceOracle,
         uint256 _maxStalePeriod,
         DepositRedeemLimiterCfg memory cfg,
-        address _kycManager
+        address _kycManager,
+        uint256 _depositMaxDeviationBps,
+        uint256 _redeemMaxDeviationBps
     ) external initializer {
         if (
             admin == address(0) ||
@@ -381,6 +386,8 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
         priceOracle = IPriceFeed(_priceOracle);
         maxStalePeriod = _maxStalePeriod;
         kycManager = _kycManager;
+        depositMaxDeviationBps = _depositMaxDeviationBps;
+        redeemMaxDeviationBps = _redeemMaxDeviationBps;
 
         __DepositRedeemLimiter_init(cfg.depositMinimum, cfg.redeemMinimum, cfg.firstDepositAmount);
 
@@ -1556,6 +1563,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
      * @param _newValue The new offchainShares value
      */
     function updateOffchainShares(uint256 _newValue) external onlyRole(MAINTAINER_ROLE) {
+        _requireQueuesEmpty();
         uint256 previous = offchainShares;
         offchainShares = _newValue;
         emit UpdateOffchainShares(_msgSender(), _newValue, previous);
@@ -1605,12 +1613,16 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     }
 
     /**
-     * @notice Refund tokens to sender, or escrow if sender is banned
+     * @notice Refund tokens to sender, or escrow if sender is banned or not kyced
      * @param _sender Address to refund
      * @param _amount Amount of tokens to refund
      */
     function _refundOrEscrow(address _sender, uint256 _amount) internal {
-        if (token.isBanned(_sender)) {
+        bool blocked = token.isBanned(_sender);
+        if (!blocked && kycManager != address(0)) {
+            blocked = !IKycManager(kycManager).isKyced(_sender);
+        }
+        if (blocked) {
             redeemEscrowBalance[_sender] += _amount;
             emit RedeemEscrowIn(_sender, _amount);
         } else {

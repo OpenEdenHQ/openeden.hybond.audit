@@ -100,6 +100,8 @@ describe('Express - Offchain Shares', function () {
             firstDepositAmount: ethers.parseUnits('1000', 18),
           },
           await kycManager.getAddress(),
+          10000,
+          10000,
         ],
         { kind: 'uups', initializer: 'initialize' }
       );
@@ -134,6 +136,8 @@ describe('Express - Offchain Shares', function () {
               firstDepositAmount: ethers.parseUnits('1000', 18),
             },
             await kycManager.getAddress(),
+            10000,
+            10000,
           ],
           { kind: 'uups', initializer: 'initialize' }
         )

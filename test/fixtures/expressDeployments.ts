@@ -110,6 +110,11 @@ export async function deployExpressContracts(): Promise<ExpressDeployment> {
         firstDepositAmount: ethers.parseUnits('1000', 18), // 1000 OEM first deposit
       },
       await kycManager.getAddress(),
+      // Permissive deviation tolerance for tests; specific tests that exercise deviation
+      // behavior override these. BPS_BASE (10000) means 100% tolerance — effectively
+      // disables the deviation guard for tests not concerned with it.
+      10000,
+      10000,
     ],
     { kind: 'uups', initializer: 'initialize' }
   );
@@ -147,12 +152,6 @@ export async function deployExpressContracts(): Promise<ExpressDeployment> {
   // Set convertRedeemRequestsDelay (T+2 = 2 days) and timeBuffer (20 hours)
   await express.connect(maintainer).updateConvertRedeemRequestsDelay(2 * 24 * 60 * 60); // 2 days
   await express.connect(maintainer).updateTimeBuffer(72000); // 20 hours
-
-  // Permissive deviation tolerance for tests; specific tests that exercise deviation
-  // behavior override these. BPS_BASE (10000) means 100% tolerance — effectively
-  // disables the deviation guard for tests not concerned with it.
-  await express.connect(maintainer).updateDepositMaxDeviationBps(10000);
-  await express.connect(maintainer).updateRedeemMaxDeviationBps(10000);
 
   // Grant KYC to test users + Express itself (Token enforces KYC on _update; Express
   // is on both sides of mint/burn/transfer flows so it must be KYC'd too).

@@ -46,6 +46,8 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
     18
   );
   const maxStalePeriod = getConfigValue<number>(expressConfig, 'maxStalePeriod');
+  const depositMaxDeviationBps = getConfigValue<number>(expressConfig, 'depositMaxDeviationBps');
+  const redeemMaxDeviationBps = getConfigValue<number>(expressConfig, 'redeemMaxDeviationBps');
 
   // Addresses (set these or use deployer as placeholder)
   const treasuryConfig = getConfigValue<string>(expressConfig, 'treasury');
@@ -238,6 +240,8 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
         firstDepositAmount,
       },
       kycManagerAddress,
+      depositMaxDeviationBps,
+      redeemMaxDeviationBps,
     ],
     {
       initializer: 'initialize',
