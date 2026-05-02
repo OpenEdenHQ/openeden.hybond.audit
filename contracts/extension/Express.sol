@@ -375,6 +375,9 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
             _kycManager == address(0)
         ) revert InvalidAddress();
 
+        if (_depositMaxDeviationBps > BPS_BASE) revert InvalidInput(_depositMaxDeviationBps);
+        if (_redeemMaxDeviationBps > BPS_BASE) revert InvalidInput(_redeemMaxDeviationBps);
+
         __AccessControlEnumerable_init();
 
         token = IToken(_token);
