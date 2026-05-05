@@ -35,7 +35,7 @@ enum TxType {
     REDEEM
 }
 
-contract Express is
+contract ExpressV1 is
     Initializable,
     UUPSUpgradeable,
     AccessControlEnumerableUpgradeable,

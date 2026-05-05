@@ -61,6 +61,5 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
 };
 
 export default func;
-func.id = "upgrade_express_impl"; // Unique identifier for this deployment
 func.tags = ["upgrade_express_impl", "upgrade"];
 func.dependencies = []; // No dependencies - can deploy standalone
