@@ -156,6 +156,7 @@ npx hardhat test test/unit/Token.test.ts
   - Redeem: Fee calculated at T+2 pricing (in redeemAsset)
 - All queue processing must re-check KYC status
 - Liquidity-aware processing (break when insufficient underlying)
+- Off-chain redeem flow (`requestDirectRedeem`): user picks an arbitrary settlement asset (e.g. RLUSD), tokens are burned immediately on-chain, `offchainShares` is decremented by the share-equivalent at current ratio, `OffchainRedeem` event is emitted. No queue, no on-chain fee, no oracle — the back-office DB matches the event and pays out off-chain. Rejects `mgtFeeTo` and `_asset == redeemAsset`.
 
 ### Queue Processing Pattern (from DoubleQueueModified)
 ```solidity

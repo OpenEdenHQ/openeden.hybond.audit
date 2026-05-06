@@ -66,10 +66,10 @@ In order:
 3. `_validateKyc(from, _to)` — same KYC check the rest of the contract uses.
 4. `if (_tokenAmount == 0) revert InvalidAmount();`
 5. `if (_asset == address(0)) revert InvalidAddress();`
-6. `if (_asset == redeemAsset) revert InvalidInput(0);` — force standard asset through queued path.
-7. `if (from == mgtFeeTo) revert InvalidInput(1);` — mgt fee shares must go through `requestRedeem` only (keeps `totalMgtFeeUnclaimed` reconciliation clean).
+6. `if (_asset == redeemAsset) revert RedeemAssetNotAllowed();` — force standard asset through queued path.
+7. `if (from == mgtFeeTo) revert MgtFeeToCannotDirectRedeem();` — mgt fee shares must go through `requestRedeem` only (keeps `totalMgtFeeUnclaimed` reconciliation clean).
 
-No `redeemMinimum` check. No `firstDeposit` check. Reuses existing errors.
+No `redeemMinimum` check. No `firstDeposit` check. Adds two named errors (`RedeemAssetNotAllowed`, `MgtFeeToCannotDirectRedeem`); other guards reuse existing errors (`InvalidAmount`, `InvalidAddress`, `InsufficientOffchainShares`, `NotInKycList`).
 
 ## Accounting
 
@@ -125,21 +125,17 @@ event OffchainRedeem(
     address indexed to,
     address indexed asset,
     uint256 tokenAmount,
-    uint256 shareAmount,
-    bytes32 id
+    uint256 shareAmount
 );
 ```
 
 Emission:
 
 ```solidity
-bytes32 id = keccak256(
-    abi.encode(from, _to, _asset, _tokenAmount, shareAmount, block.timestamp, _nonce++)
-);
-emit OffchainRedeem(from, _to, _asset, _tokenAmount, shareAmount, id);
+emit OffchainRedeem(from, _to, _asset, _tokenAmount, shareAmount);
 ```
 
-Indexed: `from`, `to`, `asset` (highest-cardinality lookup keys for DB queries). `id` is in the data section.
+Indexed: `from`, `to`, `asset` (highest-cardinality lookup keys for DB queries). The DB matches settlement events on `(txhash, logIndex)` natively — no on-chain id needed.
 
 ## Test Plan
 

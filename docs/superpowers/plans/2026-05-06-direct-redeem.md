@@ -43,8 +43,7 @@ event OffchainRedeem(
     address indexed to,
     address indexed asset,
     uint256 tokenAmount,
-    uint256 shareAmount,
-    bytes32 id
+    uint256 shareAmount
 );
 ```
 
@@ -110,7 +109,7 @@ describe('Express - requestDirectRedeem', function () {
 
       await expect(express.connect(user1).requestDirectRedeem(RLUSD, tokenAmount, user1.address))
         .to.emit(express, 'OffchainRedeem')
-        .withArgs(user1.address, user1.address, RLUSD, tokenAmount, expectedShareAmount, anyValue);
+        .withArgs(user1.address, user1.address, RLUSD, tokenAmount, expectedShareAmount);
 
       expect(await oem.totalSupply()).to.equal(supplyBefore - tokenAmount);
       expect(await oem.balanceOf(user1.address)).to.equal(userBalBefore - tokenAmount);
@@ -119,12 +118,6 @@ describe('Express - requestDirectRedeem', function () {
     });
   });
 });
-```
-
-Note: `anyValue` import — add at the top:
-
-```typescript
-import { anyValue } from '@nomicfoundation/hardhat-chai-matchers/withArgs';
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -191,11 +184,7 @@ function requestDirectRedeem(
 
     token.burn(from, _tokenAmount);
 
-    bytes32 id = keccak256(
-        abi.encode(from, _to, _asset, _tokenAmount, shareAmount, block.timestamp, _nonce++)
-    );
-
-    emit OffchainRedeem(from, _to, _asset, _tokenAmount, shareAmount, id);
+    emit OffchainRedeem(from, _to, _asset, _tokenAmount, shareAmount);
 }
 ```
 

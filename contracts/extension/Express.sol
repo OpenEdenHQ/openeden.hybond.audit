@@ -83,6 +83,8 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     // 1. The mgtFeeTo wallet must only transfer HYBOND shares to the Express contract via
     //    requestRedeem(). Direct transfers to any other address can desync totalMgtFeeUnclaimed
     //    against on-chain fee ownership, because fee-share provenance is keyed on sender identity.
+    //    The mgtFeeTo wallet must NEVER call requestDirectRedeem() — fee shares must settle in
+    //    redeemAsset via the queued path. requestDirectRedeem rejects mgtFeeTo on-chain.
     // 2. Any non-fee shares accidentally received by mgtFeeTo (e.g. a user's direct transfer) must
     //    be moved to a quarantine wallet and must NOT be redeemed through requestRedeem by mgtFeeTo.
     //    requestRedeem overrides caller-supplied amount to totalMgtFeeUnclaimed for mgtFeeTo to
@@ -283,6 +285,15 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
         bytes32 newPendingId
     );
 
+    // Event for off-chain redeem (direct burn, off-chain settlement in arbitrary asset)
+    event OffchainRedeem(
+        address indexed from,
+        address indexed to,
+        address indexed asset,
+        uint256 tokenAmount,
+        uint256 shareAmount
+    );
+
     // Event for off-ramping redeem assets to the treasury
     event OffRamp(address indexed to, uint256 amount);
     // Event for updating the first deposit flag
@@ -318,6 +329,8 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     error InsufficientOffchainShares();
     error InsufficientSettlementFunds(uint256 oracleTotal, uint256 suppliedTotal);
     error OracleDeviationExceeded(uint256 actual, uint256 expected, uint256 bps);
+    error RedeemAssetNotAllowed();
+    error MgtFeeToCannotDirectRedeem();
 
     /*//////////////////////////////////////////////////////////////
                               CONSTRUCTOR
@@ -926,6 +939,44 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
         pendingRedeemQueue.pushBack(data);
 
         emit AddToPendingRedeemQueue(from, _to, _tokenAmount, shareAmount, id);
+    }
+
+    /**
+     * @notice Redeem HYBOND tokens with off-chain settlement in an arbitrary asset.
+     * @dev Burns tokens immediately. The redeem-asset payout is handled fully off-chain;
+     *      the contract only emits the burn record for the DB to match against.
+     *      No queue, no T+2 delay; fees are applied off-chain at settlement time.
+     *
+     *      Accounting: decrements offchainShares by the share-equivalent at current ratio.
+     *      Does NOT touch totalRedeemQueueTokens (no in-flight tokens — burn is immediate).
+     *      _sharesPerToken stays invariant: numerator drops by shareAmount, denominator
+     *      drops by _tokenAmount (totalSupply burn), and shareAmount = _tokenAmount * ratio.
+     *
+     *      The mgtFeeTo wallet is rejected upfront — fee shares must redeem through
+     *      requestRedeem only, to keep totalMgtFeeUnclaimed reconciliation clean.
+     * @param _asset Informational asset address the user wants to receive off-chain
+     *               (e.g. RLUSD). Must be non-zero and not equal to redeemAsset.
+     * @param _tokenAmount HYBOND token amount to burn.
+     * @param _to KYC'd recipient address recorded for off-chain settlement.
+     */
+    function requestDirectRedeem(address _asset, uint256 _tokenAmount, address _to) external whenNotPausedRedeem {
+        address from = _msgSender();
+
+        if (_tokenAmount == 0) revert InvalidAmount();
+        if (_asset == address(0)) revert InvalidAddress();
+        if (_asset == redeemAsset) revert RedeemAssetNotAllowed();
+        if (from == mgtFeeTo) revert MgtFeeToCannotDirectRedeem();
+
+        _validateKyc(from, _to);
+
+        uint256 shareAmount = Math.mulDiv(_tokenAmount, _sharesPerToken(), 1e18);
+        if (offchainShares < shareAmount) revert InsufficientOffchainShares();
+
+        offchainShares -= shareAmount;
+
+        token.burn(from, _tokenAmount);
+
+        emit OffchainRedeem(from, _to, _asset, _tokenAmount, shareAmount);
     }
 
     // /**
