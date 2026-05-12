@@ -16,11 +16,12 @@
   },
   "PriceOracle": {
     "decimals": 8,
-    "relativeMaxDeviation": 500,
+    "relativeMaxDeviation": 1000,
     "absoluteMaxDeviation": 1000,
-    "initPrice": "1",
-    "referencePrice": "1",
-    "operator": "0xC4109e427A149239e6C1E35Bb2eCD0015B6500B8"
+    "initPrice": "1.7",
+    "referencePrice": "1.7",
+    "operator": "0x8E2bB3b057e370a7C7B95C7858D612c391869722",
+    "confirmer": "0x0000000000000000000000000000000000000000"
   },
   "Express": {
     "hybondTokenAddress": "0x1174aF6123017C2163FB8E2c1d6d6442256B1D8e",
@@ -29,7 +30,6 @@
     "treasury": "0x7eFA2138991760E8F5313A768A5f06218c80ad9F",
     "txFeeTo": "0x7eFA2138991760E8F5313A768A5f06218c80ad9F",
     "mgtFeeTo": "0x7eFA2138991760E8F5313A768A5f06218c80ad9F",
-    "confirmer": "0x0000000000000000000000000000000000000000",
     "depositMinimum": "10",
     "redeemMinimum": "5",
     "firstDepositAmount": "20",

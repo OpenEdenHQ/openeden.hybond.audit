@@ -41,6 +41,8 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   );
   const operatorConfig = getConfigValue<string>(priceOracleConfig, 'operator');
   const operator = operatorConfig === ethers.ZeroAddress ? deployer : operatorConfig;
+  const confirmerConfig = getConfigValue<string>(priceOracleConfig, 'confirmer');
+  const confirmer = confirmerConfig === ethers.ZeroAddress ? deployer : confirmerConfig;
   const adminConfig = getConfigValue<string>(commonConfig, 'admin');
   const admin = adminConfig === ethers.ZeroAddress ? deployer : adminConfig;
 
@@ -84,11 +86,26 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
     } else {
       console.log('📌 Operator already has OPERATOR_ROLE:', operator);
     }
+
+    console.log('\n3️⃣ Granting CONFIRMER_ROLE...');
+    const CONFIRMER_ROLE = await priceOracle.CONFIRMER_ROLE();
+    const hasConfirmerRole = await priceOracle.hasRole(CONFIRMER_ROLE, confirmer);
+    if (!hasConfirmerRole) {
+      const grantConfirmerTx = await priceOracle.grantRole(CONFIRMER_ROLE, confirmer);
+      await grantConfirmerTx.wait();
+      console.log('✅ CONFIRMER_ROLE granted to:', confirmer);
+    } else {
+      console.log('📌 Confirmer already has CONFIRMER_ROLE:', confirmer);
+    }
   } else {
-    console.log('\n2️⃣ Skipping OPERATOR_ROLE grant');
+    console.log('\n2️⃣ Skipping OPERATOR_ROLE / CONFIRMER_ROLE grants');
     console.log(
       '⚠️  Common.admin is not the deployer. The admin must grant OPERATOR_ROLE manually to:',
       operator
+    );
+    console.log(
+      '⚠️  The admin must grant CONFIRMER_ROLE manually to:',
+      confirmer
     );
   }
 
@@ -119,6 +136,7 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   console.log('Initial Price:', ethers.formatUnits(initPrice, decimals));
   console.log('Reference Price:', ethers.formatUnits(referencePrice, decimals));
   console.log('Operator:', operator);
+  console.log('Confirmer:', confirmer);
   console.log('Admin:', admin);
 
   // Verify on Etherscan
@@ -147,7 +165,7 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   console.log('\n💡 Next steps:');
   console.log('   - Update Express contract to use this PriceOracle via updatePriceOracle()');
   console.log('   - Set maxStalePeriod in Express if needed via updateMaxStalePeriod()');
-  console.log('   - Grant CONFIRMER_ROLE and UPGRADE_ROLE if they are needed');
+  console.log('   - Grant UPGRADE_ROLE if needed');
   console.log(
     '   - Operator can stage prices via proposePrice(), then confirmer can call confirmPrice()'
   );

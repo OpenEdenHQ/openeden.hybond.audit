@@ -161,6 +161,8 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   );
   const operatorConfig = getConfigValue<string>(priceOracleConfig, 'operator');
   const operator = operatorConfig === ethers.ZeroAddress ? deployer : operatorConfig;
+  const confirmerConfig = getConfigValue<string>(priceOracleConfig, 'confirmer');
+  const confirmer = confirmerConfig === ethers.ZeroAddress ? deployer : confirmerConfig;
 
   const latestBlock = await ethers.provider.getBlock('latest');
   const initPriceTimestamp = latestBlock!.timestamp;
@@ -196,9 +198,20 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
     } else {
       console.log('📌 Operator already has OPERATOR_ROLE:', operator);
     }
+
+    console.log('📌 Granting CONFIRMER_ROLE to PriceOracle confirmer...');
+    const CONFIRMER_ROLE = await priceOracle.CONFIRMER_ROLE();
+    const hasConfirmerRole = await priceOracle.hasRole(CONFIRMER_ROLE, confirmer);
+    if (!hasConfirmerRole) {
+      const grantConfirmerTx = await priceOracle.grantRole(CONFIRMER_ROLE, confirmer);
+      await grantConfirmerTx.wait();
+      console.log('✅ CONFIRMER_ROLE granted to:', confirmer);
+    } else {
+      console.log('📌 Confirmer already has CONFIRMER_ROLE:', confirmer);
+    }
   } else {
     console.log(
-      '⚠️  Common.admin is not the deployer. The PriceOracle admin must grant OPERATOR_ROLE manually.'
+      '⚠️  Common.admin is not the deployer. The PriceOracle admin must grant OPERATOR_ROLE and CONFIRMER_ROLE manually.'
     );
   }
   console.log('📌 Initial Price:', ethers.formatUnits(initPrice, oracleDecimals));
