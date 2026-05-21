@@ -1738,12 +1738,12 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     /**
      * @notice Convert offchain share amount into redeem asset amount using a price
      * @dev shareAmount already has the sharesPerToken ratio baked in (computed at requestRedeem time)
-     * @param _shareAmount Offchain share amount (ratio already applied)
+     * @param _amount18 18-decimal HYBOND-denominated amount (tokens or shares, depending on caller)
      * @param _price Price in 1e18 precision
      */
-    function _redeemAssetAmount(uint256 _shareAmount, uint256 _price) internal view returns (uint256 redeemAssetAmt) {
+    function _redeemAssetAmount(uint256 _amount18, uint256 _price) internal view returns (uint256 redeemAssetAmt) {
         redeemAssetAmt = _trimAsset(
-            Math.mulDiv(convertToUnderlying(redeemAsset, _shareAmount), _price, 1e18),
+            Math.mulDiv(convertToUnderlying(redeemAsset, _amount18), _price, 1e18),
             redeemAsset
         );
     }
