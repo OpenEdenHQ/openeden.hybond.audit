@@ -188,9 +188,10 @@ export async function deployExpressContracts(): Promise<ExpressDeployment> {
 
 /**
  * Compute the oracle-implied total redeem asset payout for the next `_len` pending
- * redeem entries. Mirrors `processPendingRedeems`'s expected-total accumulation:
- *   sum_i _redeemAssetAmount(shareAmount_i, oraclePrice)
- * where _redeemAssetAmount = trim(shareAmount * price / 1e18, redeemAsset decimals).
+ * redeem entries. Mirrors `processPendingRedeems`'s expected-total accumulation
+ * under the token-price oracle semantics:
+ *   sum_i _redeemAssetAmount(tokenAmount_i, oraclePrice)
+ * where _redeemAssetAmount = trim(amount * price / 1e18, redeemAsset decimals).
  *
  * Pass the returned value as `_totalAsset` to keep the deviation check happy when
  * a test only cares that processing succeeds (not the precise distribution amount).
@@ -210,8 +211,8 @@ export async function expectedRedeemAssetTotal(express: any, len: number): Promi
   let total = 0n;
   for (let i = 0; i < len; i++) {
     const info = await express.getPendingRedeemQueueInfo(i);
-    const shareAmount: bigint = info[3];
-    const raw = (shareAmount * price) / ONE_E18;
+    const tokenAmount: bigint = info[2];
+    const raw = (tokenAmount * price) / ONE_E18;
     const trimmed =
       trimDecimals === 0n || trimDecimals >= assetDecimals
         ? raw

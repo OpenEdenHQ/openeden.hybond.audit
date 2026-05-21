@@ -325,33 +325,6 @@ describe('Express - Comprehensive Tests', function () {
             .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1))
         ).to.emit(express, 'ProcessPendingRedeem');
       });
-      it('should use the ratio at requestRedeem time for redeem asset calculation', async function () {
-        const fixture = await loadFixture(deployFixture);
-        const { express, user1, oem, maintainer, operator } = await setupUserWithTokens(fixture);
-        await express.connect(maintainer).updateMgtFeeRate(300);
-        const timeBuffer = await express.timeBuffer();
-        await time.increase(timeBuffer);
-        await express.connect(operator).updateEpoch();
-        const redeemAmount = ethers.parseUnits('1000', 18);
-        // Ratio is baked in at requestRedeem time (shareAmount computed then)
-        const ratioAtRequest = await express.sharesPerToken();
-        const expectedRedeemAssetAmt = trim(
-          (redeemAmount * ratioAtRequest) / ethers.parseUnits('1', 18),
-          3
-        );
-        await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
-        const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
-        await time.increase(withdrawDelay);
-        await express
-          .connect(operator)
-          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
-        // getRedeemQueueInfo returns: (sender, receiver, tokenAmount, shareAmount, redeemAssetAmt, feeAssetAmt, requestTimestamp, id)
-        const [, , tokenAmount, , redeemAssetAmt] = await express.getRedeemQueueInfo(0);
-        expect(tokenAmount).to.equal(redeemAmount);
-        expect(redeemAssetAmt).to.equal(expectedRedeemAssetAmt);
-        expect(redeemAssetAmt).to.be.lt(redeemAmount);
-      });
       it('should preserve original timestamp when processing', async function () {
         const fixture = await loadFixture(deployFixture);
         const { express, user1, oem, operator } = await setupUserWithTokens(fixture);
@@ -1823,52 +1796,6 @@ describe('Express - Comprehensive Tests', function () {
           .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
         const [, , , , redeemAssetAmt] = await express.getRedeemQueueInfo(0);
         expect(redeemAssetAmt).to.equal(trim(redeemAmount, TRIM_DECIMALS));
-      });
-      it('should complete full E2E flow with mgt fees without revert', async function () {
-        const fixture = await loadFixture(deployFixture);
-        const { express, user1, usdo, oem, operator } = await setupWithMgtFee(fixture);
-        const ratio = await express.sharesPerToken();
-        expect(ratio).to.be.lt(ethers.parseUnits('1', 18));
-        const redeemAmount = ethers.parseUnits('1000', 18);
-        await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
-        const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
-        await time.increase(withdrawDelay);
-        await express
-          .connect(operator)
-          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
-        // redeemAssetAmt should be less than redeemAmount due to dilution
-        const [, , , , redeemAssetAmt] = await express.getRedeemQueueInfo(0);
-        expect(redeemAssetAmt).to.be.lt(redeemAmount);
-        const userUsdoBefore = await usdo.balanceOf(user1.address);
-        // processRedeemQueue should NOT revert — USDC requirement matches diluted amount
-        await expect(express.connect(operator).processRedeemQueue(1)).to.emit(
-          express,
-          'ProcessRedeem'
-        );
-        const userUsdoAfter = await usdo.balanceOf(user1.address);
-        expect(userUsdoAfter).to.be.gt(userUsdoBefore);
-      });
-      it('should calculate the exact diluted redeem amount after daily fee mint', async function () {
-        const fixture = await loadFixture(deployFixture);
-        const { express, user1, oem, operator } = await setupWithMgtFee(fixture);
-        const redeemAmount = ethers.parseUnits('1000', 18);
-        const ratioAtProcessing = await express.sharesPerToken();
-        const expectedRedeemAssetAmt = trim(
-          (redeemAmount * ratioAtProcessing) / ethers.parseUnits('1', 18),
-          TRIM_DECIMALS
-        );
-        await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
-        const redeemDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
-        await time.increase(redeemDelay);
-        await express
-          .connect(operator)
-          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
-        const [, , queuedShareAmount, , redeemAssetAmt] = await express.getRedeemQueueInfo(0);
-        expect(queuedShareAmount).to.equal(redeemAmount);
-        expect(redeemAssetAmt).to.equal(expectedRedeemAssetAmt);
-        expect(redeemAssetAmt).to.be.lt(redeemAmount);
       });
       it('should recalculate ratio on revert-then-reprocess after another daily fee mint', async function () {
         const fixture = await loadFixture(deployFixture);
