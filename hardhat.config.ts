@@ -135,6 +135,7 @@ const config: HardhatUserConfig = {
     bsc_testnet: {
       url: 'https://data-seed-prebsc-1-s1.bnbchain.org:8545',
       chainId: 97,
+      gasPrice: 3000000000,
       ...(PRIVATE_KEY ? { accounts: [PRIVATE_KEY] } : {}),
     },
     mainnet: {
@@ -154,7 +155,8 @@ const config: HardhatUserConfig = {
       ...(PRIVATE_KEY ? { accounts: [PRIVATE_KEY] } : {}),
     },
     bsc_mainnet: {
-      url: `https://bnb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
+      // url: `https://bnb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
+      url: 'https://bsc-dataseed.binance.org/',
       chainId: 56,
       // Only add account if the PK is provided
       ...(PRIVATE_KEY ? { accounts: [PRIVATE_KEY] } : {}),

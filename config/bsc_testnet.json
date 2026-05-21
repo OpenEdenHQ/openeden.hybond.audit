@@ -9,7 +9,7 @@
     "issueCap": "10000000"
   },
   "AssetRegistry": {
-    "usdcAsset": "0x7069C635d6fCd1C3D0cd9b563CDC6373e06052ee",
+    "usdcAsset": "0xf62F5cC4C0Feff9A1A373E48Ce716aB4Ab2EbB5E",
     "usdcPriceFeed": "0x0000000000000000000000000000000000000000",
     "usdcSupported": true,
     "usdcMaxStalePeriod": 0
@@ -24,16 +24,16 @@
     "confirmer": "0xE8191108261f3234f1C2acA52a0D5C11795Aef9E"
   },
   "Express": {
-    "hybondTokenAddress": "0x1174aF6123017C2163FB8E2c1d6d6442256B1D8e",
-    "usdcAddress": "0x7069C635d6fCd1C3D0cd9b563CDC6373e06052ee",
-    "assetRegistryAddress": "0x46BAc0b6705261b5E0895aA0A362c859D09ef3CF",
+    "hybondTokenAddress": "0x0000000000000000000000000000000000000000",
+    "usdcAddress": "0xf62F5cC4C0Feff9A1A373E48Ce716aB4Ab2EbB5E",
+    "assetRegistryAddress": "0x0000000000000000000000000000000000000000",
     "treasury": "0x7eFA2138991760E8F5313A768A5f06218c80ad9F",
     "txFeeTo": "0x7eFA2138991760E8F5313A768A5f06218c80ad9F",
     "mgtFeeTo": "0x7eFA2138991760E8F5313A768A5f06218c80ad9F",
     "depositMinimum": "10",
     "redeemMinimum": "5",
     "firstDepositAmount": "20",
-    "priceOracle": "0xD1E04a3c2e57275019c0cded1E65425833826C52",
+    "priceOracle": "0x0000000000000000000000000000000000000000",
     "maxStalePeriod": 86400,
     "depositMaxDeviationBps": 100,
     "redeemMaxDeviationBps": 100
