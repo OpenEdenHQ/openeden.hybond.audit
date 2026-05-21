@@ -1736,8 +1736,9 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     }
 
     /**
-     * @notice Convert offchain share amount into redeem asset amount using a price
-     * @dev shareAmount already has the sharesPerToken ratio baked in (computed at requestRedeem time)
+     * @notice Convert an 18-decimal HYBOND-denominated amount to redeem asset using a price
+     * @dev Unit-agnostic: the input may be tokens or shares depending on the caller. The
+     *      `_price` must match the unit of `_amount18` (tokenPrice for tokens, sharePrice for shares).
      * @param _amount18 18-decimal HYBOND-denominated amount (tokens or shares, depending on caller)
      * @param _price Price in 1e18 precision
      */
