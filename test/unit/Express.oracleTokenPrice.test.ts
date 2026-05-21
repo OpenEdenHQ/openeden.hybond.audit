@@ -30,9 +30,7 @@ async function setOraclePrice(
   await priceOracle.connect(admin).updateAbsoluteMaxDeviation(10000);
 
   const latest = await ethers.provider.getBlock('latest');
-  await priceOracle
-    .connect(operator)
-    .proposePrice(tokenPriceE18, BigInt(latest!.timestamp - 1));
+  await priceOracle.connect(operator).proposePrice(tokenPriceE18, BigInt(latest!.timestamp - 1));
   await priceOracle.connect(confirmer).confirmPrice(tokenPriceE18);
 }
 
@@ -68,15 +66,7 @@ describe('Express — oracle returns token price (assets per HYBOND token)', fun
   describe('processDepositQueue deviation gate', function () {
     it('derives oracleShares as (oracleTokens × sharesPerToken) and accepts matching _newShares', async function () {
       const fixture = await loadFixture(deployExpressContracts);
-      const {
-        express,
-        priceOracle,
-        usdo,
-        user1,
-        admin,
-        operator,
-        maintainer,
-      } = fixture;
+      const { express, priceOracle, usdo, user1, admin, operator, maintainer } = fixture;
 
       await bootstrapAndSeedOffchainShares(fixture);
 
@@ -104,22 +94,13 @@ describe('Express — oracle returns token price (assets per HYBOND token)', fun
       const expectedShares = ethers.parseUnits('500', 18);
 
       // Pass exactly the oracle-implied shares — deviation gate passes.
-      await expect(
-        express.connect(maintainer).processDepositQueue(1, expectedShares)
-      ).to.not.be.reverted;
+      await expect(express.connect(maintainer).processDepositQueue(1, expectedShares)).to.not.be
+        .reverted;
     });
 
     it('reverts when _newShares deviates >1% from (oracleTokens × sharesPerToken)', async function () {
       const fixture = await loadFixture(deployExpressContracts);
-      const {
-        express,
-        priceOracle,
-        usdo,
-        user1,
-        admin,
-        operator,
-        maintainer,
-      } = fixture;
+      const { express, priceOracle, usdo, user1, admin, operator, maintainer } = fixture;
 
       await bootstrapAndSeedOffchainShares(fixture);
       const offchainBefore = await express.offchainShares();
@@ -147,15 +128,7 @@ describe('Express — oracle returns token price (assets per HYBOND token)', fun
   describe('processPendingRedeems expected-total', function () {
     it('uses stored tokenAmount × tokenPrice (not shareAmount × tokenPrice)', async function () {
       const fixture = await loadFixture(deployExpressContracts);
-      const {
-        express,
-        oem,
-        priceOracle,
-        user1,
-        admin,
-        operator,
-        maintainer,
-      } = fixture;
+      const { express, oem, priceOracle, user1, admin, operator, maintainer } = fixture;
 
       await bootstrapAndSeedOffchainShares(fixture);
 
@@ -189,9 +162,8 @@ describe('Express — oracle returns token price (assets per HYBOND token)', fun
       await ethers.provider.send('evm_mine', []);
 
       // Pass exactly the NEW expected total — deviation gate passes.
-      await expect(
-        express.connect(operator).processPendingRedeems(1, newExpected)
-      ).to.not.be.reverted;
+      await expect(express.connect(operator).processPendingRedeems(1, newExpected)).to.not.be
+        .reverted;
     });
 
     it('Pass-2 pro-rata distributes _totalAsset by shareAmount across multiple redeems', async function () {
@@ -201,17 +173,8 @@ describe('Express — oracle returns token price (assets per HYBOND token)', fun
       // queueing is not possible; this test verifies the distribution math runs correctly
       // under the new expected-total semantics).
       const fixture = await loadFixture(deployExpressContracts);
-      const {
-        express,
-        oem,
-        usdo,
-        user1,
-        user2,
-        admin,
-        operator,
-        maintainer,
-        priceOracle,
-      } = fixture;
+      const { express, oem, usdo, user1, user2, admin, operator, maintainer, priceOracle } =
+        fixture;
 
       await bootstrapAndSeedOffchainShares(fixture);
 
@@ -224,12 +187,8 @@ describe('Express — oracle returns token price (assets per HYBOND token)', fun
       await express.connect(maintainer).updateRedeemMaxDeviationBps(10000);
       await express.connect(maintainer).updateRedeemFeeRate(0);
 
-      await express
-        .connect(user1)
-        .requestRedeem(user1.address, ethers.parseUnits('200', 18));
-      await express
-        .connect(user2)
-        .requestRedeem(user2.address, ethers.parseUnits('100', 18));
+      await express.connect(user1).requestRedeem(user1.address, ethers.parseUnits('200', 18));
+      await express.connect(user2).requestRedeem(user2.address, ethers.parseUnits('100', 18));
 
       await ethers.provider.send('evm_increaseTime', [2 * 24 * 60 * 60 + 1]);
       await ethers.provider.send('evm_mine', []);

@@ -1882,8 +1882,7 @@ describe('Express - Comprehensive Tests', function () {
       });
       it('should NOT reprice pending redeems when a deposit is processed (ratio invariance)', async function () {
         const fixture = await loadFixture(deployFixture);
-        const { express, usdo, user1, user2, oem, maintainer } =
-          await setupWithMgtFee(fixture);
+        const { express, usdo, user1, user2, oem, maintainer } = await setupWithMgtFee(fixture);
         const redeemAmount = ethers.parseUnits('1000', 18);
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
         await express.connect(user1).requestRedeem(user1.address, redeemAmount);
