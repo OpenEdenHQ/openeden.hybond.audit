@@ -249,4 +249,40 @@ describe('Express — oracle returns token price (assets per HYBOND token)', fun
       expect(payB).to.equal(ethers.parseUnits('100', 18));
     });
   });
+
+  describe('regression — bootstrap path (oracle=1e18, ratio=1e18)', function () {
+    it('previewRedeem returns _tokenAmount net of fee at bootstrap', async function () {
+      const fixture = await loadFixture(deployExpressContracts);
+      const { express, maintainer } = fixture;
+
+      await bootstrapAndSeedOffchainShares(fixture);
+      // Oracle stays at the fixture default (1e18). Ratio is 1e18.
+
+      await express.connect(maintainer).updateRedeemFeeRate(0);
+
+      const amt = ethers.parseUnits('1', 18);
+      const [, redeemAssetAmt] = await express.previewRedeem(amt);
+      expect(redeemAssetAmt).to.equal(amt);
+    });
+
+    it('processDepositQueue deviation gate is permissive when oracle=1e18 and ratio=1e18', async function () {
+      const fixture = await loadFixture(deployExpressContracts);
+      const { express, usdo, user1, maintainer } = fixture;
+
+      await bootstrapAndSeedOffchainShares(fixture);
+
+      await express.connect(maintainer).updateDepositMaxDeviationBps(100);
+      await express.connect(maintainer).updateDepositFeeRate(0);
+
+      const depositAmt = ethers.parseUnits('1000', 18);
+      await express
+        .connect(user1)
+        .requestDeposit(await usdo.getAddress(), depositAmt, user1.address);
+
+      // 1000 / 1.0 = 1000 oracleTokens; × 1.0 = 1000 oracleShares.
+      await expect(
+        express.connect(maintainer).processDepositQueue(1, ethers.parseUnits('1000', 18))
+      ).to.not.be.reverted;
+    });
+  });
 });
