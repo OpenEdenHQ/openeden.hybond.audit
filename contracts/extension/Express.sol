@@ -1056,7 +1056,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
             batchTotalShares += shareAmount;
 
             if (useOracle) {
-                expectedTotal += _redeemAssetAmount(shareAmount, oraclePrice);
+                expectedTotal += _redeemAssetAmount(tokenAmount, oraclePrice);
             }
 
             unchecked {

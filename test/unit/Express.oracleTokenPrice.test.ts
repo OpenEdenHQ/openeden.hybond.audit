@@ -143,4 +143,110 @@ describe('Express — oracle returns token price (assets per HYBOND token)', fun
       ).to.be.revertedWithCustomError(express, 'OracleDeviationExceeded');
     });
   });
+
+  describe('processPendingRedeems expected-total', function () {
+    it('uses stored tokenAmount × tokenPrice (not shareAmount × tokenPrice)', async function () {
+      const fixture = await loadFixture(deployExpressContracts);
+      const {
+        express,
+        oem,
+        priceOracle,
+        user1,
+        admin,
+        operator,
+        maintainer,
+      } = fixture;
+
+      await bootstrapAndSeedOffchainShares(fixture);
+
+      // Move ratio to 0.5 BEFORE the redeem so the stored shareAmount differs from tokenAmount.
+      const offchainBefore = await express.offchainShares();
+      await express.connect(maintainer).updateOffchainShares(offchainBefore / 2n);
+      expect(await express.sharesPerToken()).to.equal(ONE / 2n);
+
+      // Oracle: 1 HYBOND = 1.05 USDO.
+      const tokenPrice = (ONE * 105n) / 100n;
+      await setOraclePrice(priceOracle, admin, operator, operator, tokenPrice);
+
+      // Tighten redeem deviation gate.
+      await express.connect(maintainer).updateRedeemMaxDeviationBps(100);
+      await express.connect(maintainer).updateRedeemFeeRate(0);
+
+      // user1 holds firstDepositAmount HYBOND from bootstrap. Redeem 100.
+      const redeemAmt = ethers.parseUnits('100', 18);
+      await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
+      await express.connect(user1).requestRedeem(user1.address, redeemAmt);
+
+      // Stored on the queued entry:
+      //   tokenAmount = 100
+      //   shareAmount = 100 × 0.5 = 50
+      // NEW expected-total: tokenAmount × tokenPrice = 100 × 1.05 = 105.
+      // OLD expected-total would be: 50 × 1.05 = 52.5.
+      const newExpected = ethers.parseUnits('105', 18);
+
+      // Advance past the T+2 delay.
+      await ethers.provider.send('evm_increaseTime', [2 * 24 * 60 * 60 + 1]);
+      await ethers.provider.send('evm_mine', []);
+
+      // Pass exactly the NEW expected total — deviation gate passes.
+      await expect(
+        express.connect(operator).processPendingRedeems(1, newExpected)
+      ).to.not.be.reverted;
+    });
+
+    it('Pass-2 pro-rata distributes _totalAsset by shareAmount across multiple redeems', async function () {
+      // Pro-rata distribution sanity check. Two redeems with different tokenAmounts under
+      // the same ratio (Express._requireQueuesEmpty prevents changing the ratio between
+      // redeems, so observing shareAmount-vs-tokenAmount weighting via cross-snapshot
+      // queueing is not possible; this test verifies the distribution math runs correctly
+      // under the new expected-total semantics).
+      const fixture = await loadFixture(deployExpressContracts);
+      const {
+        express,
+        oem,
+        usdo,
+        user1,
+        user2,
+        admin,
+        operator,
+        maintainer,
+        priceOracle,
+      } = fixture;
+
+      await bootstrapAndSeedOffchainShares(fixture);
+
+      // user1 has firstDepositAmount HYBOND. Transfer 100 to user2 so user2 can redeem.
+      await oem.connect(user1).transfer(user2.address, ethers.parseUnits('100', 18));
+      await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
+      await oem.connect(user2).approve(await express.getAddress(), ethers.MaxUint256);
+
+      await setOraclePrice(priceOracle, admin, operator, operator, ONE);
+      await express.connect(maintainer).updateRedeemMaxDeviationBps(10000);
+      await express.connect(maintainer).updateRedeemFeeRate(0);
+
+      await express
+        .connect(user1)
+        .requestRedeem(user1.address, ethers.parseUnits('200', 18));
+      await express
+        .connect(user2)
+        .requestRedeem(user2.address, ethers.parseUnits('100', 18));
+
+      await ethers.provider.send('evm_increaseTime', [2 * 24 * 60 * 60 + 1]);
+      await ethers.provider.send('evm_mine', []);
+
+      // expectedTotal under new semantics: (200 + 100) × 1.0 = 300.
+      const totalAsset = ethers.parseUnits('300', 18);
+      const balUser1Before = await usdo.balanceOf(user1.address);
+      const balUser2Before = await usdo.balanceOf(user2.address);
+
+      await express.connect(operator).processPendingRedeems(2, totalAsset);
+      await express.connect(operator).processRedeemQueue(2);
+
+      // 2:1 share-weighted split: user1 gets 200, user2 gets 100.
+      const payA = (await usdo.balanceOf(user1.address)) - balUser1Before;
+      const payB = (await usdo.balanceOf(user2.address)) - balUser2Before;
+      expect(payA).to.equal(ethers.parseUnits('200', 18));
+      expect(payB).to.equal(ethers.parseUnits('100', 18));
+    });
+  });
 });
