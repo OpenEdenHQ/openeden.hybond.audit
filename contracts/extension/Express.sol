@@ -117,7 +117,10 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     // External contract integrations
     IAssetRegistry public assetRegistry;
 
-    // Price oracle address
+    /// @notice External price feed reporting the token price of HYBOND (assets per
+    ///         HYBOND token, normalized to 1e18). When unset, getPrice() falls back
+    ///         to 1e18 (1:1 ratio). Note: this changed from share-price semantics —
+    ///         see docs/2026-05-21-oracle-token-price-semantics-design.md.
     IPriceFeed public priceOracle;
 
     // Maximum allowed staleness for price data (e.g., 24 hours = 86400)

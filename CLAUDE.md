@@ -157,6 +157,7 @@ npx hardhat test test/unit/Token.test.ts
 - All queue processing must re-check KYC status
 - Liquidity-aware processing (break when insufficient underlying)
 - Off-chain redeem flow (`requestDirectRedeem`): user picks an arbitrary settlement asset (e.g. RLUSD), tokens are burned immediately on-chain, `offchainShares` is decremented by the share-equivalent at current ratio, `OffchainRedeem` event is emitted. No queue, no on-chain fee, no oracle — the back-office DB matches the event and pays out off-chain. Rejects `mgtFeeTo` and `_asset == redeemAsset`.
+- **Oracle semantics**: `priceOracle` returns the **token price** (assets per HYBOND token, 1e18). `sharesPerToken` is used inside the contract to convert oracleTokens ↔ oracleShares whenever the operator-supplied parameter is in share units (e.g. `processDepositQueue(_newShares)`).
 
 ### Queue Processing Pattern (from DoubleQueueModified)
 ```solidity
