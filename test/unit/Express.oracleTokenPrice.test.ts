@@ -35,6 +35,32 @@ async function setOraclePrice(
 }
 
 describe('Express — oracle returns token price (assets per HYBOND token)', function () {
+  describe('previewDeposit', function () {
+    it('returns assets / tokenPrice independently of sharesPerToken', async function () {
+      const fixture = await loadFixture(deployExpressContracts);
+      const { express, priceOracle, usdo, admin, operator, maintainer } = fixture;
+
+      await bootstrapAndSeedOffchainShares(fixture);
+
+      // Skew the ratio so the bug (tokenPrice = price × sharesPerToken) is observable.
+      const offchainBefore = await express.offchainShares();
+      await express.connect(maintainer).updateOffchainShares(offchainBefore / 2n);
+      expect(await express.sharesPerToken()).to.equal(ONE / 2n);
+
+      const tokenPrice = (ONE * 105n) / 100n;
+      await setOraclePrice(priceOracle, admin, operator, operator, tokenPrice);
+
+      await express.connect(maintainer).updateDepositFeeRate(0);
+
+      // Deposit 1050 USDO. Expected mint under NEW semantics: 1050 / 1.05 = 1000 HYBOND.
+      // Under OLD (buggy) semantics: tokenPrice = 1.05 × 0.5 = 0.525, mint = 1050 / 0.525 = 2000.
+      const depositAmt = ethers.parseUnits('1050', 18);
+      const expected = ethers.parseUnits('1000', 18);
+      const [, , netMintAmt] = await express.previewDeposit(await usdo.getAddress(), depositAmt);
+      expect(netMintAmt).to.equal(expected);
+    });
+  });
+
   describe('previewRedeem', function () {
     it('returns tokens × tokenPrice independently of sharesPerToken', async function () {
       const fixture = await loadFixture(deployExpressContracts);

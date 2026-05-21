@@ -27,11 +27,12 @@ Earlier audit feedback and operational practice converged on quoting prices in t
 
 | Site | Reason |
 |---|---|
-| `_calculateMintAmount` | Already computes `tokens = assets / price`. Under token-price semantics, that is correct as-is. The original framing "drop the conversion here" was a misread — there is no share-to-token conversion in this function. |
 | `requestRedeem` | Still records `shareAmount = tokenAmount × sharesPerToken()` for queue entries. Unaffected. |
 | `offchainShares` increments/decrements | Bookkeeping unit unchanged. |
 | Pro-rata distribution in `processPendingRedeems` | Pro-rata is unit-agnostic. Keeping it on stored `shareAmount` preserves request-time ratio locking. |
 | Storage layout / events ABI | No new state, no event signature changes. |
+
+> **Correction (Task 10, post-merge):** an earlier version of this spec listed `_calculateMintAmount` as unchanged based on a misread of the function body. The function actually derived `tokenPrice = price × sharesPerToken / 1e18` from the oracle's share-price output before computing `mint = assets / tokenPrice`. Under token-price oracle semantics that derivation is exactly the redundant conversion the original prompt called out. The fix is documented below in section 5.
 
 ### Changed
 
@@ -100,7 +101,32 @@ Rationale: queue entries carry both `tokenAmount` and `shareAmount`. With token-
 
 **Important:** the Pass 2 pro-rata distribution (Express.sol:1085) continues to use `shareAmounts[i] / batchTotalShares`. Switching to `tokenAmount`-based pro-rata would change per-entry payouts whenever entries were enqueued under different `sharesPerToken` snapshots. Preserving the existing pro-rata weights honors the "request-time ratio is locked" property that the `shareAmount` field exists to provide.
 
-#### 4. `_redeemAssetAmount` parameter rename (Express.sol:1743)
+#### 4. `_calculateMintAmount` (Express.sol:690)
+
+**Before:**
+```solidity
+function _calculateMintAmount(address _asset, uint256 _netAssets) internal view returns (uint256 mintAmount) {
+    uint256 amount = convertFromUnderlying(_asset, _netAssets);
+    uint256 price = getPrice();
+    uint256 tokenPrice = Math.mulDiv(price, _sharesPerToken(), 1e18);
+    mintAmount = _trim(Math.mulDiv(amount, 1e18, tokenPrice));
+}
+```
+
+**After:**
+```solidity
+function _calculateMintAmount(address _asset, uint256 _netAssets) internal view returns (uint256 mintAmount) {
+    uint256 amount = convertFromUnderlying(_asset, _netAssets);
+    uint256 price = getPrice();
+    mintAmount = _trim(Math.mulDiv(amount, 1e18, price));
+}
+```
+
+Rationale: when the oracle returned share-price, deriving token-price as `sharePrice × sharesPerToken` was necessary to divide assets correctly. Under the new semantics `getPrice()` already returns token-price, so the intermediate derivation produces the wrong divisor (`tokenPrice_buggy = tokenPrice × sharesPerToken`) and inflates `mintAmount` by `1 / sharesPerToken`.
+
+Only `previewDeposit` calls this function — a `view` helper for UI / off-chain consumers. The on-chain deposit settlement path (`processDepositQueue`) does its own pro-rata mint based on operator-supplied `_newShares` and is unaffected. No accounting was corrupted on-chain; previews were just wrong.
+
+#### 5. `_redeemAssetAmount` parameter rename (Express.sol:1743)
 
 **Before:**
 ```solidity
@@ -114,7 +140,7 @@ function _redeemAssetAmount(uint256 _amount18, uint256 _price) internal view ret
 
 Body unchanged. Callers now pass either shares (legacy callsite, but only one survives the changes above and the surviving callsite passes `tokenAmount`) or tokens (`previewRedeem`, `processPendingRedeems` expected-total). The body is unit-agnostic — it just multiplies an 18-decimal value by an 18-decimal price and converts to the asset's native decimals — so the parameter name should reflect that.
 
-#### 5. Doc / comment updates
+#### 6. Doc / comment updates
 
 - `Express.sol` block comment on `priceOracle` declaration (around :121): note that the oracle reports **token price** (assets per HYBOND token), not share price.
 - The mgtFeeTo invariant list (`Express.sol:80` block, item 7) already lists `priceOracle` among the "do not change while queues non-empty" parameters. No edit needed there — the constraint stands.
@@ -175,7 +201,7 @@ Run `grep -rn "priceOracle\|getPrice\|MockPriceFeed\|setPrice\|latestRoundData" 
 
 ## Acceptance Criteria
 
-- `_calculateMintAmount` source unchanged; covered by an explicit comment confirming token-price interpretation.
+- `_calculateMintAmount` simplified to drop the redundant share-to-token-price derivation; covered by an exact-value `previewDeposit` test under non-1e18 ratio.
 - The four call sites above updated per the diffs in this spec.
 - `priceOracle` declaration comment notes token-price semantics.
 - All existing tests pass; new tests 1–5 above added and passing.

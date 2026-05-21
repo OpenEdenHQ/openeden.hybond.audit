@@ -117,10 +117,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     // External contract integrations
     IAssetRegistry public assetRegistry;
 
-    /// @notice External price feed reporting the token price of HYBOND (assets per
-    ///         HYBOND token, normalized to 1e18). When unset, getPrice() falls back
-    ///         to 1e18 (1:1 ratio). Note: this changed from share-price semantics —
-    ///         see docs/2026-05-21-oracle-token-price-semantics-design.md.
+    // Price oracle address
     IPriceFeed public priceOracle;
 
     // Maximum allowed staleness for price data (e.g., 24 hours = 86400)
@@ -693,8 +690,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
     function _calculateMintAmount(address _asset, uint256 _netAssets) internal view returns (uint256 mintAmount) {
         uint256 amount = convertFromUnderlying(_asset, _netAssets);
         uint256 price = getPrice();
-        uint256 tokenPrice = Math.mulDiv(price, _sharesPerToken(), 1e18);
-        mintAmount = _trim(Math.mulDiv(amount, 1e18, tokenPrice));
+        mintAmount = _trim(Math.mulDiv(amount, 1e18, price));
     }
 
     /**
