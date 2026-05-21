@@ -64,4 +64,83 @@ describe('Express — oracle returns token price (assets per HYBOND token)', fun
       expect(redeemAssetAmt).to.equal(tokenPrice);
     });
   });
+
+  describe('processDepositQueue deviation gate', function () {
+    it('derives oracleShares as (oracleTokens × sharesPerToken) and accepts matching _newShares', async function () {
+      const fixture = await loadFixture(deployExpressContracts);
+      const {
+        express,
+        priceOracle,
+        usdo,
+        user1,
+        admin,
+        operator,
+        maintainer,
+      } = fixture;
+
+      await bootstrapAndSeedOffchainShares(fixture);
+
+      // Skew ratio: sharesPerToken = 0.5e18.
+      const offchainBefore = await express.offchainShares();
+      await express.connect(maintainer).updateOffchainShares(offchainBefore / 2n);
+      expect(await express.sharesPerToken()).to.equal(ONE / 2n);
+
+      // Oracle: 1 HYBOND = 1.05 USDO.
+      const tokenPrice = (ONE * 105n) / 100n;
+      await setOraclePrice(priceOracle, admin, operator, operator, tokenPrice);
+
+      // Tighten the deposit deviation gate to 1% so we actually test the path.
+      await express.connect(maintainer).updateDepositMaxDeviationBps(100);
+      await express.connect(maintainer).updateDepositFeeRate(0);
+
+      // user1 deposits 1050 USDO. Net = 1050 (fee 0).
+      const depositAmt = ethers.parseUnits('1050', 18);
+      await express
+        .connect(user1)
+        .requestDeposit(await usdo.getAddress(), depositAmt, user1.address);
+
+      // Operator-derived oracleTokens = 1050 / 1.05 = 1000 HYBOND.
+      // oracleShares = 1000 × 0.5 = 500 shares.
+      const expectedShares = ethers.parseUnits('500', 18);
+
+      // Pass exactly the oracle-implied shares — deviation gate passes.
+      await expect(
+        express.connect(maintainer).processDepositQueue(1, expectedShares)
+      ).to.not.be.reverted;
+    });
+
+    it('reverts when _newShares deviates >1% from (oracleTokens × sharesPerToken)', async function () {
+      const fixture = await loadFixture(deployExpressContracts);
+      const {
+        express,
+        priceOracle,
+        usdo,
+        user1,
+        admin,
+        operator,
+        maintainer,
+      } = fixture;
+
+      await bootstrapAndSeedOffchainShares(fixture);
+      const offchainBefore = await express.offchainShares();
+      await express.connect(maintainer).updateOffchainShares(offchainBefore / 2n);
+
+      const tokenPrice = (ONE * 105n) / 100n;
+      await setOraclePrice(priceOracle, admin, operator, operator, tokenPrice);
+
+      await express.connect(maintainer).updateDepositMaxDeviationBps(100);
+      await express.connect(maintainer).updateDepositFeeRate(0);
+
+      const depositAmt = ethers.parseUnits('1050', 18);
+      await express
+        .connect(user1)
+        .requestDeposit(await usdo.getAddress(), depositAmt, user1.address);
+
+      // 10% off expectedShares = 500 → 550 → must revert.
+      const wrong = ethers.parseUnits('550', 18);
+      await expect(
+        express.connect(maintainer).processDepositQueue(1, wrong)
+      ).to.be.revertedWithCustomError(express, 'OracleDeviationExceeded');
+    });
+  });
 });

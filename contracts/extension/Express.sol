@@ -787,7 +787,8 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
         }
 
         if (address(priceOracle) != address(0)) {
-            uint256 oracleShares = Math.mulDiv(batchTotalNetAssets, 1e18, getPrice());
+            uint256 oracleTokens = Math.mulDiv(batchTotalNetAssets, 1e18, getPrice());
+            uint256 oracleShares = Math.mulDiv(oracleTokens, _sharesPerToken(), 1e18);
             _checkDeviation(_newShares, oracleShares, depositMaxDeviationBps);
         }
 
