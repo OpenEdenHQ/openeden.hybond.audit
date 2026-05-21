@@ -786,8 +786,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
         }
 
         if (address(priceOracle) != address(0)) {
-            uint256 oracleTokens = Math.mulDiv(batchTotalNetAssets, 1e18, getPrice());
-            uint256 oracleShares = Math.mulDiv(oracleTokens, _sharesPerToken(), 1e18);
+            uint256 oracleShares = Math.mulDiv(batchTotalNetAssets, _sharesPerToken(), getPrice());
             _checkDeviation(_newShares, oracleShares, depositMaxDeviationBps);
         }
 
@@ -1026,7 +1025,6 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
         bytes[] memory entries = new bytes[](_len);
         uint256[] memory shareAmounts = new uint256[](_len);
         uint256 batchTotalShares;
-        uint256 expectedTotal;
         uint256 processed;
 
         // Pass 1: pop ready entries, validate KYC, accumulate
@@ -1054,10 +1052,6 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
             shareAmounts[processed] = shareAmount;
             batchTotalShares += shareAmount;
 
-            if (useOracle) {
-                expectedTotal += _redeemAssetAmount(tokenAmount, oraclePrice);
-            }
-
             unchecked {
                 ++processed;
             }
@@ -1067,6 +1061,9 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
 
         // Deviation gate
         if (useOracle) {
+            uint256 sharePrice = Math.mulDiv(oraclePrice, 1e18, _sharesPerToken());
+            uint256 expectedTotal = _redeemAssetAmount(batchTotalShares, sharePrice);
+
             _checkDeviation(_totalAsset, expectedTotal, redeemMaxDeviationBps);
         }
 
