@@ -997,9 +997,7 @@ contract Express is UUPSUpgradeable, AccessControlEnumerableUpgradeable, Express
         uint256 _tokenAmount
     ) public view returns (uint256 feeAmt, uint256 redeemAssetAmt, uint256 netRedeemAssetAmt) {
         uint256 price = getPrice();
-        uint256 ratio = _sharesPerToken();
-        uint256 shareAmount = Math.mulDiv(_tokenAmount, ratio, 1e18);
-        redeemAssetAmt = _redeemAssetAmount(shareAmount, price);
+        redeemAssetAmt = _redeemAssetAmount(_tokenAmount, price);
         feeAmt = txsFee(redeemAssetAmt, TxType.REDEEM);
         netRedeemAssetAmt = redeemAssetAmt - feeAmt;
     }

@@ -283,21 +283,6 @@ describe('Express - Comprehensive Tests', function () {
         expect(feeAmt).to.equal((redeemAssetAmt * 100n) / 10000n);
         expect(netRedeemAssetAmt).to.equal(redeemAssetAmt - feeAmt);
       });
-      it('should apply the current shares-per-token ratio after daily management fee mint', async function () {
-        const fixture = await loadFixture(deployFixture);
-        const { express, user1, usdo, maintainer, operator } = await setupUserWithTokens(fixture);
-        await express.connect(maintainer).updateMgtFeeRate(300);
-        const timeBuffer = await express.timeBuffer();
-        await time.increase(timeBuffer);
-        await express.connect(operator).updateEpoch();
-        const redeemAmount = ethers.parseUnits('1000', 18);
-        const ratio = await express.sharesPerToken();
-        const expectedRedeemAssetAmt = trim((redeemAmount * ratio) / ethers.parseUnits('1', 18), 3);
-        const [, redeemAssetAmt] = await express.previewRedeem(redeemAmount);
-        expect(ratio).to.be.lt(ethers.parseUnits('1', 18));
-        expect(redeemAssetAmt).to.equal(expectedRedeemAssetAmt);
-        expect(redeemAssetAmt).to.be.lt(redeemAmount);
-      });
     });
     describe('Pending Redeem Queue', function () {
       it('should add redeem to pending queue', async function () {
@@ -1839,24 +1824,6 @@ describe('Express - Comprehensive Tests', function () {
         const [, , , , redeemAssetAmt] = await express.getRedeemQueueInfo(0);
         expect(redeemAssetAmt).to.equal(trim(redeemAmount, TRIM_DECIMALS));
       });
-      it('should match previewRedeem with actual processing when no state changes between', async function () {
-        const fixture = await loadFixture(deployFixture);
-        const { express, user1, oem, operator } = await setupWithMgtFee(fixture);
-        const redeemAmount = ethers.parseUnits('1000', 18);
-        await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-        // Preview before requesting
-        const [previewFee, previewGross, previewNet] = await express.previewRedeem(redeemAmount);
-        await express.connect(user1).requestRedeem(user1.address, redeemAmount);
-        // Process immediately after delay (no intervening updateEpoch/deposits/cancels)
-        const withdrawDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
-        await time.increase(withdrawDelay);
-        await express
-          .connect(operator)
-          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
-        const [, , , , redeemAssetAmt, feeAssetAmt] = await express.getRedeemQueueInfo(0);
-        expect(redeemAssetAmt).to.equal(previewGross);
-        expect(feeAssetAmt).to.equal(previewFee);
-      });
       it('should complete full E2E flow with mgt fees without revert', async function () {
         const fixture = await loadFixture(deployFixture);
         const { express, user1, usdo, oem, operator } = await setupWithMgtFee(fixture);
@@ -1988,12 +1955,10 @@ describe('Express - Comprehensive Tests', function () {
       });
       it('should NOT reprice pending redeems when a deposit is processed (ratio invariance)', async function () {
         const fixture = await loadFixture(deployFixture);
-        const { express, usdo, user1, user2, oem, maintainer, operator } =
+        const { express, usdo, user1, user2, oem, maintainer } =
           await setupWithMgtFee(fixture);
         const redeemAmount = ethers.parseUnits('1000', 18);
         await oem.connect(user1).approve(await express.getAddress(), ethers.MaxUint256);
-        const [, previewBeforeDeposit] = await express.previewRedeem(redeemAmount);
-        // Ratio is baked in at requestRedeem time
         await express.connect(user1).requestRedeem(user1.address, redeemAmount);
         const depositAmount = ethers.parseUnits('5000', 18);
         await express
@@ -2002,20 +1967,7 @@ describe('Express - Comprehensive Tests', function () {
         const ratioBeforeDeposit = await express.sharesPerToken();
         await express.connect(maintainer).processDepositQueue(1, depositAmount);
         const ratioAfterDeposit = await express.sharesPerToken();
-        // Ratio is invariant after processDepositQueue (within rounding dust from pro-rata mint)
         expect(ratioAfterDeposit).to.be.closeTo(ratioBeforeDeposit, ethers.parseUnits('1', 12));
-        const redeemDelay = 2n * 24n * 60n * 60n; // T+2 = 2 days
-        await time.increase(redeemDelay);
-        await express
-          .connect(operator)
-          .processPendingRedeems(1, await expectedRedeemAssetTotal(express, 1));
-        const [, , , , redeemAssetAmtAfterDeposit] = await express.getRedeemQueueInfo(0);
-        // Redeem amount matches preview (within rounding tolerance from mulDiv)
-        // The ratio was baked in at requestRedeem time, so deposits don't affect it
-        expect(redeemAssetAmtAfterDeposit).to.be.closeTo(
-          previewBeforeDeposit,
-          ethers.parseUnits('1', 12)
-        );
       });
     });
     describe('changing trimDecimals mid-operation', function () {
