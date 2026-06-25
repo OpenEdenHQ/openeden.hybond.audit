@@ -18,6 +18,8 @@
     "node": "hardhat node",
     "deploy:local": "hardhat run scripts/deploy.ts --network localhost",
     "deploy:sepolia": "hardhat run scripts/deploy.ts --network sepolia",
+    "grant:roles:eth": "dotenvx run -- hardhat run scripts/grant-admin-roles.ts --network mainnet",
+    "grant:roles:bnb": "dotenvx run -- hardhat run scripts/grant-admin-roles.ts --network bsc_mainnet",
     "gas-report": "REPORT_GAS=true hardhat test",
     "typechain": "hardhat typechain",
     "format": "prettier --write 'contracts/**/*.sol' 'test/**/*.ts' '*.ts'",

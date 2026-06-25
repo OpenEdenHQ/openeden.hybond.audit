@@ -24,16 +24,16 @@
     "confirmer": "0xE8191108261f3234f1C2acA52a0D5C11795Aef9E"
   },
   "Express": {
-    "hybondTokenAddress": "0x0000000000000000000000000000000000000000",
+    "hybondTokenAddress": "0x323e2B26373C5f4dD804c11759C7006efedc0E10",
     "usdcAddress": "0xf62F5cC4C0Feff9A1A373E48Ce716aB4Ab2EbB5E",
-    "assetRegistryAddress": "0x0000000000000000000000000000000000000000",
+    "assetRegistryAddress": "0x1bF4Aba3fCF4b853FeDB3D027D3cb94d77267f92",
     "treasury": "0x7eFA2138991760E8F5313A768A5f06218c80ad9F",
     "txFeeTo": "0x7eFA2138991760E8F5313A768A5f06218c80ad9F",
     "mgtFeeTo": "0x7eFA2138991760E8F5313A768A5f06218c80ad9F",
     "depositMinimum": "10",
     "redeemMinimum": "5",
     "firstDepositAmount": "20",
-    "priceOracle": "0x0000000000000000000000000000000000000000",
+    "priceOracle": "0xc47aF12cAd7e8Caf8639D719B180C78Fb24134A9",
     "maxStalePeriod": 86400,
     "depositMaxDeviationBps": 100,
     "redeemMaxDeviationBps": 100
