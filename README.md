@@ -78,8 +78,8 @@ ETHERSCAN_KEY=your_etherscan_api_key
 
 Deployment parameters are stored in:
 
-- [sepolia.json](/Users/duke/mycoding/openeden/gitlab/hybond/hybond-contracts/config/sepolia.json)
-- [mainnet.json](/Users/duke/mycoding/openeden/gitlab/hybond/hybond-contracts/config/mainnet.json)
+- [config/sepolia.json](./config/sepolia.json)
+- [config/mainnet.json](./config/mainnet.json)
 
 The config format is hierarchical. Each top-level key is a contract or shared section, and that section contains its parameters.
 
@@ -203,3 +203,19 @@ npm run verify:all
 
 - The deployment scripts are network-config driven; prefer updating `config/*.json` over editing hardcoded values in scripts.
 - For upgradeable contracts, do not change storage layout unless you are intentionally introducing a new deployment baseline and understand the upgrade implications.
+
+## Deployed Addresses
+
+Deployed contract addresses for all networks (mainnet + testnet) are in [`deployed-addresses.md`](./deployed-addresses.md).
+
+## Audits
+
+Independent security audit reports are in [`audits/`](./audits/).
+
+## Attribution
+
+This project is released under the [MIT License](./LICENSE). While the MIT
+License does not require it, if you use this software in your own product or
+service, we kindly ask that you include visible attribution to **OpenEden**
+(e.g. in your documentation, UI, or credits) and link to
+[openeden.com](https://openeden.com/).
